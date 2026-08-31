@@ -24,9 +24,10 @@ model User {
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
-  memberships       WorkspaceMember[]
-  sentInvitations   Invitation[]       @relation("InvitationsSentByUser")
-  auditLogs         AuditLog[]
+  memberships        WorkspaceMember[]
+  sentInvitations    Invitation[]        @relation("InvitationsSentByUser")
+  auditLogs          AuditLog[]
+  shopifyOAuthStates ShopifyOAuthState[]
 
   @@map("users")
 }
@@ -42,9 +43,12 @@ model Workspace {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  members     WorkspaceMember[]
-  invitations Invitation[]
-  auditLogs   AuditLog[]
+  members              WorkspaceMember[]
+  invitations          Invitation[]
+  auditLogs            AuditLog[]
+  shopifyStores        ShopifyStore[]
+  shopifyOAuthStates   ShopifyOAuthState[]
+  shopifyWebhookEvents ShopifyWebhookEvent[]
 
   @@map("workspaces")
 }
@@ -81,20 +85,20 @@ enum InvitationStatus {
 }
 
 model Invitation {
-  id              String            @id @default(cuid())
+  id              String           @id @default(cuid())
   workspaceId     String
   email           String
   role            WorkspaceRole
   // Hash do token real (o token em claro só existe no link enviado ao convidado).
-  tokenHash       String            @unique
-  status          InvitationStatus  @default(PENDING)
+  tokenHash       String           @unique
+  status          InvitationStatus @default(PENDING)
   expiresAt       DateTime
   invitedByUserId String
-  createdAt       DateTime          @default(now())
-  updatedAt       DateTime          @updatedAt
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
 
-  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  invitedBy   User      @relation("InvitationsSentByUser", fields: [invitedByUserId], references: [id])
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  invitedBy User      @relation("InvitationsSentByUser", fields: [invitedByUserId], references: [id])
 
   @@index([workspaceId])
   @@index([email])
@@ -123,4 +127,92 @@ model AuditLog {
   @@index([workspaceId, createdAt])
   @@index([entityType, entityId])
   @@map("audit_logs")
+}
+
+// ---------------------------------------------------------------------------
+// Shopify — Fase 1A (OAuth + conexão de loja + webhooks)
+// ---------------------------------------------------------------------------
+
+enum ShopifyStoreStatus {
+  CONNECTED
+  DISCONNECTED
+  REAUTH_REQUIRED
+}
+
+model ShopifyStore {
+  id                   String             @id @default(cuid())
+  workspaceId          String
+  shopDomain           String             @unique
+  displayName          String?
+  // Criptografado (AES-256-GCM) — nunca lido fora de modules/shopify/encryption.ts.
+  // Null quando desconectada: não guardamos um token utilizável sem necessidade.
+  accessTokenEncrypted String?
+  scopes               String
+  status               ShopifyStoreStatus @default(CONNECTED)
+  installedAt          DateTime           @default(now())
+  disconnectedAt       DateTime?
+  lastSyncAt           DateTime?
+  createdAt            DateTime           @default(now())
+  updatedAt            DateTime           @updatedAt
+
+  workspace     Workspace             @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  webhookEvents ShopifyWebhookEvent[]
+
+  @@index([workspaceId])
+  @@map("shopify_stores")
+}
+
+enum ShopifyOAuthStatePurpose {
+  CONNECT
+}
+
+/// Estado de uso único do fluxo OAuth. Uma linha por tentativa de conexão;
+/// `consumedAt` é setado atomicamente no callback para impedir replay do
+/// mesmo `state` (CSRF / captura de URL).
+model ShopifyOAuthState {
+  id          String                   @id @default(cuid())
+  state       String                   @unique
+  workspaceId String
+  userId      String
+  shopDomain  String
+  purpose     ShopifyOAuthStatePurpose @default(CONNECT)
+  expiresAt   DateTime
+  consumedAt  DateTime?
+  createdAt   DateTime                 @default(now())
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId])
+  @@index([expiresAt])
+  @@map("shopify_oauth_states")
+}
+
+enum ShopifyWebhookEventStatus {
+  RECEIVED
+  PROCESSING
+  PROCESSED
+  FAILED
+  IGNORED
+}
+
+model ShopifyWebhookEvent {
+  id               String                    @id @default(cuid())
+  workspaceId      String?
+  shopifyStoreId   String?
+  shopDomain       String
+  topic            String
+  shopifyWebhookId String                    @unique
+  payload          Json
+  receivedAt       DateTime                  @default(now())
+  processedAt      DateTime?
+  status           ShopifyWebhookEventStatus @default(RECEIVED)
+  error            String?
+
+  workspace    Workspace?    @relation(fields: [workspaceId], references: [id], onDelete: SetNull)
+  shopifyStore ShopifyStore? @relation(fields: [shopifyStoreId], references: [id], onDelete: SetNull)
+
+  @@index([shopDomain, topic])
+  @@index([status])
+  @@map("shopify_webhook_events")
 }

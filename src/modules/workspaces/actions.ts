@@ -2,6 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 
+import { env } from "@/lib/env";
 import { requireUser } from "@/modules/identity/service";
 import { actionError, actionOk, type ActionResult } from "@/modules/shared/action-result";
 import { ValidationError } from "@/modules/shared/errors";
@@ -62,8 +63,7 @@ export async function inviteMemberAction(
       role: parsed.data.role,
     });
 
-    const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000";
-    const inviteUrl = `${appUrl}/invitations/${rawToken}`;
+    const inviteUrl = `${env.NEXT_PUBLIC_APP_URL}/invitations/${rawToken}`;
 
     revalidatePath(`/${workspaceSlug}/members`);
     return actionOk({ inviteUrl });

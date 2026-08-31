@@ -22,7 +22,9 @@ export type WorkspacePermission =
   | "workspace:manage_members" // convidar, alterar papel de ADMIN/MEMBER, remover ADMIN/MEMBER
   | "workspace:remove_owner" // remover ou rebaixar um OWNER — restrito ao próprio OWNER
   | "workspace:view_members"
-  | "workspace:view_audit_log";
+  | "workspace:view_audit_log"
+  | "shopify:manage_stores" // conectar/desconectar loja Shopify — OWNER e ADMIN
+  | "shopify:view_stores";
 
 const ROLE_PERMISSIONS: Record<WorkspaceRole, WorkspacePermission[]> = {
   OWNER: [
@@ -31,13 +33,17 @@ const ROLE_PERMISSIONS: Record<WorkspaceRole, WorkspacePermission[]> = {
     "workspace:remove_owner",
     "workspace:view_members",
     "workspace:view_audit_log",
+    "shopify:manage_stores",
+    "shopify:view_stores",
   ],
   ADMIN: [
     "workspace:manage_members",
     "workspace:view_members",
     "workspace:view_audit_log",
+    "shopify:manage_stores",
+    "shopify:view_stores",
   ],
-  MEMBER: ["workspace:view_members"],
+  MEMBER: ["workspace:view_members", "shopify:view_stores"],
 };
 
 export function roleHasPermission(

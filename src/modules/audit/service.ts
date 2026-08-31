@@ -12,7 +12,12 @@ export type AuditAction =
   | "workspace.invitation_revoked"
   | "workspace.invitation_accepted"
   | "workspace.member_role_changed"
-  | "workspace.member_removed";
+  | "workspace.member_removed"
+  | "shopify.store_connect_started"
+  | "shopify.store_connected"
+  | "shopify.store_disconnected"
+  | "shopify.store_uninstalled_webhook"
+  | "shopify.webhook_registration_failed";
 
 interface LogAuditInput {
   workspaceId: string;
