@@ -1,9 +1,11 @@
 import "server-only";
 
 import { Prisma } from "@prisma/client";
+import { z } from "zod";
 
 import { prisma } from "@/lib/db";
 import { logAudit } from "@/modules/audit/service";
+import { enqueueJob } from "@/modules/queue/service";
 
 interface PersistWebhookEventInput {
   shopDomain: string;
@@ -51,44 +53,107 @@ export async function persistWebhookEvent(
   }
 }
 
+// Payload REST-style que a Shopify entrega no corpo do webhook (não o GID
+// da GraphQL). Usado só para saber QUAL produto mudou — o estado do
+// produto em si é sempre buscado de novo na Shopify pelo job, nunca lido
+// deste payload.
+const productWebhookPayloadSchema = z.object({ id: z.union([z.number(), z.string()]) });
+
+function toProductGid(numericId: number | string): string {
+  return `gid://shopify/Product/${numericId}`;
+}
+
 /**
  * Despacha o processamento pós-resposta (chamado via `after()` no route
- * handler, fora do caminho crítico da resposta HTTP). Só `app/uninstalled`
- * tem lógica real nesta fase — os demais tópicos ficam armazenados como
- * `IGNORED` para processamento em fases futuras (Catalog, Orders).
+ * handler, fora do caminho crítico da resposta HTTP).
+ *
+ * `app/uninstalled` continua tratado aqui mesmo (best-effort, idempotente,
+ * uma linha) — os tópicos de catálogo (`products/update`,
+ * `products/delete`) passam a enfileirar um job na fila persistente em vez
+ * de processar inline: uma sincronização pode envolver chamada de rede à
+ * Shopify e precisa de retry/crash-recovery, o que `after()` não oferece.
  */
 export async function processWebhookEvent(eventId: string): Promise<void> {
   const event = await prisma.shopifyWebhookEvent.findUnique({ where: { id: eventId } });
   if (!event || event.status !== "RECEIVED") return;
 
-  if (event.topic !== "app/uninstalled") {
-    await prisma.shopifyWebhookEvent.update({
-      where: { id: event.id },
-      data: { status: "IGNORED" },
-    });
+  if (event.topic === "app/uninstalled") {
+    await runEventHandler(event.id, () => handleAppUninstalled(event.shopDomain));
     return;
   }
 
-  await prisma.shopifyWebhookEvent.update({
-    where: { id: event.id },
-    data: { status: "PROCESSING" },
-  });
+  if (event.topic === "products/update" || event.topic === "products/delete") {
+    await runEventHandler(event.id, () =>
+      enqueueProductWebhookJob({
+        topic: event.topic,
+        workspaceId: event.workspaceId,
+        shopifyStoreId: event.shopifyStoreId,
+        payload: event.payload,
+      })
+    );
+    return;
+  }
+
+  // Demais tópicos (orders/*, fulfillments/create): armazenados para
+  // processamento em fases futuras (Orders).
+  await prisma.shopifyWebhookEvent.update({ where: { id: event.id }, data: { status: "IGNORED" } });
+}
+
+async function runEventHandler(eventId: string, handler: () => Promise<void>): Promise<void> {
+  await prisma.shopifyWebhookEvent.update({ where: { id: eventId }, data: { status: "PROCESSING" } });
 
   try {
-    await handleAppUninstalled(event.shopDomain);
+    await handler();
     await prisma.shopifyWebhookEvent.update({
-      where: { id: event.id },
+      where: { id: eventId },
       data: { status: "PROCESSED", processedAt: new Date() },
     });
   } catch (error) {
     await prisma.shopifyWebhookEvent.update({
-      where: { id: event.id },
+      where: { id: eventId },
       data: {
         status: "FAILED",
         error: error instanceof Error ? error.message : "erro desconhecido",
       },
     });
   }
+}
+
+async function enqueueProductWebhookJob(params: {
+  topic: string;
+  workspaceId: string | null;
+  shopifyStoreId: string | null;
+  payload: unknown;
+}): Promise<void> {
+  if (!params.workspaceId || !params.shopifyStoreId) {
+    throw new Error("Webhook recebido para uma loja não resolvida (workspaceId/shopifyStoreId ausentes).");
+  }
+
+  const parsedPayload = productWebhookPayloadSchema.parse(params.payload);
+  const shopifyProductId = toProductGid(parsedPayload.id);
+
+  if (params.topic === "products/delete") {
+    await enqueueJob({
+      type: "SHOPIFY_PRODUCT_DELETE",
+      workspaceId: params.workspaceId,
+      payload: {
+        workspaceId: params.workspaceId,
+        shopifyStoreId: params.shopifyStoreId,
+        shopifyProductId,
+      },
+    });
+    return;
+  }
+
+  await enqueueJob({
+    type: "SHOPIFY_PRODUCT_SYNC",
+    workspaceId: params.workspaceId,
+    payload: {
+      workspaceId: params.workspaceId,
+      shopifyStoreId: params.shopifyStoreId,
+      shopifyProductId,
+    },
+  });
 }
 
 async function handleAppUninstalled(shopDomain: string): Promise<void> {

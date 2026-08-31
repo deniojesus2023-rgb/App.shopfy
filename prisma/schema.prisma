@@ -49,6 +49,9 @@ model Workspace {
   shopifyStores        ShopifyStore[]
   shopifyOAuthStates   ShopifyOAuthState[]
   shopifyWebhookEvents ShopifyWebhookEvent[]
+  catalogSyncRuns      CatalogSyncRun[]
+  products             Product[]
+  productVariants      ProductVariant[]
 
   @@map("workspaces")
 }
@@ -155,8 +158,10 @@ model ShopifyStore {
   createdAt            DateTime           @default(now())
   updatedAt            DateTime           @updatedAt
 
-  workspace     Workspace             @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  webhookEvents ShopifyWebhookEvent[]
+  workspace       Workspace             @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  webhookEvents   ShopifyWebhookEvent[]
+  catalogSyncRuns CatalogSyncRun[]
+  products        Product[]
 
   @@index([workspaceId])
   @@map("shopify_stores")
@@ -215,4 +220,166 @@ model ShopifyWebhookEvent {
   @@index([shopDomain, topic])
   @@index([status])
   @@map("shopify_webhook_events")
+}
+
+// ---------------------------------------------------------------------------
+// Fila persistente (Postgres) — Fase 1B
+// ---------------------------------------------------------------------------
+
+enum BackgroundJobType {
+  SHOPIFY_FULL_CATALOG_SYNC
+  SHOPIFY_PRODUCT_SYNC
+  SHOPIFY_PRODUCT_DELETE
+}
+
+enum BackgroundJobStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+}
+
+/// Fila de jobs em Postgres. `claimNext` (modules/queue/service.ts) usa
+/// `UPDATE ... WHERE id = (SELECT ... FOR UPDATE SKIP LOCKED)` — o padrão
+/// canônico para impedir dois workers pegarem o mesmo job, sem precisar de
+/// Redis/SQS nesta fase.
+model BackgroundJob {
+  id          String              @id @default(cuid())
+  workspaceId String?
+  type        BackgroundJobType
+  payload     Json
+  status      BackgroundJobStatus @default(PENDING)
+  attempts    Int                 @default(0)
+  maxAttempts Int                 @default(5)
+  runAt       DateTime            @default(now())
+  lockedAt    DateTime?
+  lockedBy    String?
+  lastError   String?
+  createdAt   DateTime            @default(now())
+  updatedAt   DateTime            @updatedAt
+  completedAt DateTime?
+
+  @@index([status, runAt])
+  @@map("background_jobs")
+}
+
+// ---------------------------------------------------------------------------
+// Catálogo — Fase 1B (produtos e variantes importados da Shopify)
+// ---------------------------------------------------------------------------
+
+enum CatalogSyncType {
+  FULL
+  INCREMENTAL
+}
+
+enum CatalogSyncStatus {
+  PENDING
+  RUNNING
+  COMPLETED
+  FAILED
+}
+
+/// Uma linha por execução de sincronização. `productsProcessed`/
+/// `variantsProcessed` alimentam o card "Última sincronização" na UI.
+/// Reconciliação de produtos removidos (ver Product.lastSeenSyncRunId) só
+/// acontece depois que um run FULL chega em COMPLETED.
+model CatalogSyncRun {
+  id                String            @id @default(cuid())
+  workspaceId       String
+  shopifyStoreId    String
+  type              CatalogSyncType
+  status            CatalogSyncStatus @default(PENDING)
+  startedAt         DateTime?
+  finishedAt        DateTime?
+  productsProcessed Int               @default(0)
+  variantsProcessed Int               @default(0)
+  error             String?
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
+
+  workspace    Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  shopifyStore ShopifyStore @relation(fields: [shopifyStoreId], references: [id], onDelete: Cascade)
+  products     Product[]
+
+  @@index([shopifyStoreId, createdAt])
+  @@map("catalog_sync_runs")
+}
+
+enum ShopifyProductStatus {
+  ACTIVE
+  ARCHIVED
+  DRAFT
+}
+
+model Product {
+  id                String               @id @default(cuid())
+  workspaceId       String
+  shopifyStoreId    String
+  // GID completo da Shopify (ex.: "gid://shopify/Product/123456789") — nunca
+  // assumir que cabe em Int.
+  shopifyProductId  String
+  title             String
+  handle            String
+  description       String?              @db.Text
+  descriptionHtml   String?              @db.Text
+  vendor            String?
+  productType       String?
+  status            ShopifyProductStatus
+  featuredImageUrl  String?
+  shopifyCreatedAt  DateTime?
+  shopifyUpdatedAt  DateTime?
+  syncedAt          DateTime             @default(now())
+  // Marcador de reconciliação: setado para o CatalogSyncRun.id do full sync
+  // que mais recentemente viu este produto. Um produto cujo marcador não
+  // bate com o run atual, ao final de um run COMPLETED, foi removido na
+  // Shopify — nunca durante um run em andamento ou que falhou no meio.
+  lastSeenSyncRunId String?
+  createdAt         DateTime             @default(now())
+  updatedAt         DateTime             @updatedAt
+  deletedAt         DateTime?
+
+  workspace    Workspace        @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  shopifyStore ShopifyStore     @relation(fields: [shopifyStoreId], references: [id], onDelete: Cascade)
+  lastSeenRun  CatalogSyncRun?  @relation(fields: [lastSeenSyncRunId], references: [id], onDelete: SetNull)
+  variants     ProductVariant[]
+
+  @@unique([shopifyStoreId, shopifyProductId])
+  @@index([workspaceId, deletedAt])
+  @@index([workspaceId, status])
+  @@index([shopifyStoreId, lastSeenSyncRunId])
+  @@map("products")
+}
+
+model ProductVariant {
+  id                String    @id @default(cuid())
+  workspaceId       String
+  productId         String
+  // Denormalizado do Product pai — permite unicidade e escopo de tenant
+  // direto na variante, sem depender de join.
+  shopifyStoreId    String
+  shopifyVariantId  String
+  title             String
+  sku               String?
+  barcode           String?
+  price             Decimal   @db.Decimal(12, 2)
+  compareAtPrice    Decimal?  @db.Decimal(12, 2)
+  inventoryQuantity Int?
+  availableForSale  Boolean   @default(true)
+  // Posição na lista de variantes do produto (a Admin API não expõe mais um
+  // campo `position` em ProductVariant — deriva-se do índice de retorno).
+  position          Int
+  imageUrl          String?
+  shopifyCreatedAt  DateTime?
+  shopifyUpdatedAt  DateTime?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+  deletedAt         DateTime?
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  product   Product   @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@unique([shopifyStoreId, shopifyVariantId])
+  @@index([workspaceId])
+  @@index([productId])
+  @@map("product_variants")
 }

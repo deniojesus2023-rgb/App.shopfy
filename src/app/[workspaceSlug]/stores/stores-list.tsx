@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useState, useTransition } from "react";
 
 import { Button } from "@/components/ui/button";
@@ -64,6 +65,11 @@ export function StoresList({
               >
                 {STATUS_LABEL[store.status]}
               </span>
+              {store.status === "CONNECTED" && (
+                <Button type="button" variant="outline" size="sm" asChild>
+                  <Link href={`/${workspaceSlug}/stores/${store.id}/products`}>Ver produtos</Link>
+                </Button>
+              )}
               {canManage && store.status === "CONNECTED" && (
                 <Button
                   type="button"

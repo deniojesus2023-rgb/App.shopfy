@@ -2,9 +2,10 @@
 
 SaaS multi-tenant para funis de vendas gamificados conectados a lojas Shopify.
 Este repositório contém a **Fase 0** (fundação, autenticação, workspaces,
-RBAC, auditoria) e a **Fase 1A** (conexão de loja Shopify via OAuth +
-webhooks). Importação de produtos, funis, COD, pagamentos e fornecedores
-ainda não foram implementados.
+RBAC, auditoria), a **Fase 1A** (conexão de loja Shopify via OAuth + webhooks)
+e a **Fase 1B** (fila persistente + importação/sincronização de catálogo).
+Funil de vendas, storefront público, COD, gamificação, pagamentos, fornecedores
+e WhatsApp ainda não foram implementados.
 
 ## Stack
 
@@ -28,6 +29,7 @@ shadcn/ui · Clerk · Shopify Admin GraphQL API
      app → Client credentials. Configure a Allowed redirection URL como
      `<sua-url>/api/shopify/oauth/callback`.
    - `SHOPIFY_TOKEN_ENCRYPTION_KEY`: gere com `openssl rand -base64 32`.
+   - `CRON_SECRET`: gere com `openssl rand -hex 32` (protege o worker da fila).
    - Em dev, exponha `localhost:3000` com `ngrok`/`cloudflared` e use essa
      URL pública em `NEXT_PUBLIC_APP_URL` — a Shopify não redireciona/entrega
      webhook para `localhost`.
@@ -41,37 +43,54 @@ shadcn/ui · Clerk · Shopify Admin GraphQL API
    ```bash
    npm run dev
    ```
+5. **Fila de jobs**: em produção (Vercel), `vercel.json` já agenda
+   `/api/cron/process-jobs` a cada minuto. **Em dev local não há cron** —
+   dispare manualmente enquanto testa uma importação:
+   ```bash
+   curl -H "Authorization: Bearer $CRON_SECRET" http://localhost:3000/api/cron/process-jobs
+   ```
 
 ## Estrutura
 
 ```
 src/
-  app/                                → rotas (App Router)
-    [workspaceSlug]/                  → área autenticada de um workspace
-      stores/                         → conectar/listar/desconectar lojas Shopify
-      members/                        → gestão de membros
-    invitations/[token]/              → aceite público de convite
+  app/                                     → rotas (App Router)
+    [workspaceSlug]/                       → área autenticada de um workspace
+      stores/                              → conectar/listar/desconectar lojas Shopify
+        [storeId]/products/                → catálogo importado (busca, filtro, paginação)
+      members/                             → gestão de membros
+    invitations/[token]/                   → aceite público de convite
     api/
-      webhooks/clerk/                 → sincronização de usuários
+      webhooks/clerk/                      → sincronização de usuários
       shopify/
-        oauth/install/                → inicia o OAuth (redirect 302)
-        oauth/callback/                → troca code por token, conecta a loja
-        webhooks/[topic]/              → recebe webhooks Shopify (HMAC + idempotência)
+        oauth/install/                     → inicia o OAuth (redirect 302)
+        oauth/callback/                     → troca code por token, conecta a loja
+        webhooks/[topic]/                   → recebe webhooks Shopify (HMAC + idempotência)
+      cron/process-jobs/                    → worker da fila (chamado pelo cron da Vercel)
   modules/
-    identity/                         → User, sincronização com Clerk
-    workspaces/                       → Workspace, membros, convites, RBAC, tenant isolation
+    identity/                              → User, sincronização com Clerk
+    workspaces/                            → Workspace, membros, convites, RBAC, tenant isolation
     shopify/
-      domain.ts                       → normalização/validação de shopDomain
-      scopes.ts                       → escopos OAuth pedidos e por quê
-      encryption.ts                   → AES-256-GCM para o access token em repouso
-      client.ts                       → ShopifyClient centralizado (Admin GraphQL)
-      oauth/                          → state (uso único), troca code→token, URL de autorização
-      stores/                         → ShopifyStore: conectar, desconectar, listar, token descriptografado
-      webhooks/                       → tópicos, verificação HMAC, persistência idempotente, processamento
-    audit/                            → AuditLog
-    shared/                           → erros de domínio, ActionResult, slug, rate limit
-  components/ui/                       → primitives shadcn/ui
-prisma/schema.prisma                   → schema do banco
+      domain.ts                            → normalização/validação de shopDomain
+      scopes.ts                            → escopos OAuth pedidos e por quê
+      encryption.ts                        → AES-256-GCM para o access token em repouso
+      client.ts                            → ShopifyClient centralizado (Admin GraphQL, custo/throttle, erros tipados)
+      oauth/                               → state (uso único), troca code→token, URL de autorização
+      stores/                              → ShopifyStore: conectar, desconectar, listar, token descriptografado
+      webhooks/                            → tópicos, verificação HMAC, persistência idempotente, ensureRequiredWebhooks
+    queue/                                 → fila persistente em Postgres (enqueue/claim/complete/fail)
+    catalog/
+      graphql.ts                           → query de página do catálogo + produto único
+      transform.ts                         → Shopify → modelo local (função pura)
+      service.ts                           → upsert idempotente, soft delete, reconciliação, listagem paginada
+      sync-run.ts                          → CatalogSyncRun (status, contadores)
+      handlers/                            → um handler por BackgroundJobType
+      actions.ts                           → Server Action que dispara o full sync
+    audit/                                 → AuditLog
+    shared/                                → erros de domínio, ActionResult, slug, rate limit
+  components/ui/                            → primitives shadcn/ui
+prisma/schema.prisma                        → schema do banco
+vercel.json                                 → agenda o cron de processamento da fila
 ```
 
 ## Isolamento multi-tenant
@@ -81,7 +100,9 @@ Toda leitura/escrita de dado de um workspace passa por
 (`src/modules/workspaces/tenant.ts`), que resolve a sessão Clerk, confirma
 que o usuário pertence ao workspace do slug da URL, e só então libera o
 `workspaceId` para uso em queries. Nenhum service de domínio deve montar uma
-query Prisma usando um `workspaceId` vindo direto do client.
+query Prisma usando um `workspaceId` vindo direto do client. No catálogo, toda
+entidade carrega `workspaceId` **e** `shopifyStoreId`, e a unicidade Shopify
+(`shopifyProductId`, `shopifyVariantId`) é escopada por loja, nunca global.
 
 ## Shopify — OAuth e webhooks (Fase 1A)
 
@@ -94,24 +115,29 @@ query Prisma usando um `workspaceId` vindo direto do client.
 - **Callback**: `/api/shopify/oauth/callback` exige `state` válido e não
   consumido (marcado atomicamente via `updateMany` para impedir replay) **e**
   HMAC da query string válido. Só então troca `code` por access token,
-  criptografa (AES-256-GCM) e persiste `ShopifyStore`, registra os 5
-  webhooks obrigatórios via `webhookSubscriptionCreate` e grava `AuditLog`.
+  criptografa (AES-256-GCM) e persiste `ShopifyStore`, registra os webhooks
+  obrigatórios via `webhookSubscriptionCreate` e grava `AuditLog`.
 - **Token**: nunca retorna ao client. `getDecryptedAccessToken()`
   (`modules/shopify/stores/service.ts`) é o único ponto do sistema que
   descriptografa, e só server-side.
 - **Webhooks**: `/api/shopify/webhooks/[topic]` verifica HMAC sobre o corpo
   raw, persiste o evento de forma idempotente (`shopifyWebhookId` é único —
-  reentrega da Shopify não gera efeito duplicado) e responde rápido; o
-  processamento roda depois via `after()`, fora do caminho crítico da
-  resposta. Nesta fase, só `app/uninstalled` tem lógica real (desconecta a
-  loja e limpa o token); os demais tópicos ficam persistidos como `IGNORED`
-  para as próximas fases (Catalog, Orders).
+  reentrega da Shopify não gera efeito duplicado) e responde rápido.
+  `app/uninstalled` é processado inline via `after()` (best-effort, uma
+  única linha, idempotente). `products/update` e `products/delete`
+  enfileiram um job na fila persistente em vez de processar inline — podem
+  envolver chamada de rede à Shopify e precisam de retry/crash-recovery.
+- **ensureRequiredWebhooks**: idempotente — compara as subscriptions já
+  registradas na loja contra a lista obrigatória e cria só as que faltam.
+  Roda automaticamente no início de todo full sync, então uma loja
+  conectada antes de uma fase que adicionou um novo tópico (ex.:
+  `products/delete`, que chegou na 1B) não precisa reconectar.
 
 ### Escopos OAuth pedidos
 
 | Escopo | Por quê |
 | --- | --- |
-| `read_products` | Fase 1B (importação de catálogo) — pedido já agora para não reautorizar o app duas vezes seguidas |
+| `read_products` | Importação/sincronização de catálogo (Fase 1B) |
 | `read_orders` | Reconciliar pedidos existentes na loja |
 | `write_orders` | Criar o pedido na Shopify a partir do fluxo COD (Fase 3) |
 | `read_fulfillments` | Status de envio/entrega (Fase 3) |
@@ -119,13 +145,50 @@ query Prisma usando um `workspaceId` vindo direto do client.
 Deliberadamente fora de escopo: `write_products`, `read_customers`,
 `write_customers`, qualquer escopo de billing/checkout.
 
+## Catálogo — fila e importação (Fase 1B)
+
+- **Fila persistente em Postgres** (`modules/queue/`, tabela
+  `background_jobs`): `claimNextJob` reivindica atomicamente via
+  `UPDATE ... WHERE id = (SELECT ... FOR UPDATE SKIP LOCKED)` — dois workers
+  nunca pegam o mesmo job. Jobs travados em `PROCESSING` há mais de 5 min
+  (worker morto) voltam a ficar elegíveis. `failJob` reagenda com backoff
+  exponencial (30s → cap de 15min) até `maxAttempts`; erros marcados como
+  não-retentáveis (`NonRetryableJobError` — token inválido, loja
+  desconectada) vão direto para `FAILED`.
+- **Execução**: sem worker de longa duração no Vercel serverless — um cron
+  (`vercel.json`, a cada minuto) bate em `/api/cron/process-jobs`
+  (protegido por `CRON_SECRET`) e processa até 5 jobs por invocação.
+- **Full sync**: um job processa **uma página** de produtos (50 por vez,
+  com todas as variantes — o limite da Shopify é 100 variantes/produto, o
+  que elimina qualquer N+1). Se houver próxima página, o próprio job
+  enfileira a continuação com o cursor; a página inteira do produto é
+  upsertada numa transação por produto (não a loja inteira numa
+  transação só).
+- **Produtos removidos**: cada produto tocado num full sync recebe
+  `lastSeenSyncRunId = <id do CatalogSyncRun>`. A reconciliação
+  ("sumiu = removido") só roda **depois** que o run inteiro chega a
+  `COMPLETED` — uma paginação incompleta ou um erro no meio nunca gera
+  exclusão falsa.
+- **CatalogSyncRun**: uma linha por execução (`FULL`/`INCREMENTAL`),
+  alimenta o card "Última sincronização" da UI com contadores de produtos e
+  variantes processados.
+- **Erros da Shopify**: `ShopifyClient` detecta HTTP 401 (token
+  inválido/revogado → marca a loja `REAUTH_REQUIRED`, falha o job sem
+  retry) e `THROTTLED` nos `errors[].extensions.code` (cost-based rate
+  limit → falha retentável, backoff normal da fila). O `throttleStatus` da
+  resposta é usado para adiar a próxima página quando a Shopify sinaliza
+  pouca capacidade restante.
+
 ## Testes
 
 ```bash
 npm test
 ```
 
-Cobre os helpers de segurança críticos: `normalizeShopDomain`, validação de
-state OAuth (uso único, expiração, replay), verificação de HMAC (webhook e
-callback OAuth), round-trip de criptografia do token, e idempotência de
-persistência de webhook.
+Cobre os helpers de segurança críticos da Fase 1A (`normalizeShopDomain`,
+state OAuth, HMAC, criptografia, idempotência de webhook) e da Fase 1B:
+upsert idempotente de produto/variante (incluindo "full sync executado duas
+vezes não duplica"), isolamento por loja, transformação Shopify → modelo
+local, paginação do full sync, webhook `products/update`/`products/delete`
+→ enfileiramento de job, claim/retry/backoff da fila, e transições de
+`CatalogSyncRun`. A Shopify é sempre mockada — nenhum teste faz chamada real.

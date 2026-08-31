@@ -14,6 +14,7 @@ export interface WebhookTopicDefinition {
 export const REQUIRED_WEBHOOK_TOPICS: WebhookTopicDefinition[] = [
   { urlSlug: "app-uninstalled", header: "app/uninstalled", graphqlTopic: "APP_UNINSTALLED" },
   { urlSlug: "products-update", header: "products/update", graphqlTopic: "PRODUCTS_UPDATE" },
+  { urlSlug: "products-delete", header: "products/delete", graphqlTopic: "PRODUCTS_DELETE" },
   { urlSlug: "orders-create", header: "orders/create", graphqlTopic: "ORDERS_CREATE" },
   { urlSlug: "orders-updated", header: "orders/updated", graphqlTopic: "ORDERS_UPDATED" },
   {

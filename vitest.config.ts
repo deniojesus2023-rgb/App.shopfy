@@ -15,6 +15,7 @@ export default defineConfig({
       // Chave fixa e sem valor real — apenas para os testes decodificarem
       // 32 bytes válidos e exercitarem o round-trip de encrypt/decrypt.
       SHOPIFY_TOKEN_ENCRYPTION_KEY: "DQYDyk/ywNVI9ARyJzzZ0WsLHOIEi/9YXDeZButXFmo=",
+      CRON_SECRET: "test_cron_secret",
     },
   },
   resolve: {

@@ -27,6 +27,11 @@ const envSchema = z.object({
       (value) => Buffer.from(value, "base64").length === 32,
       "SHOPIFY_TOKEN_ENCRYPTION_KEY deve decodificar para 32 bytes (openssl rand -base64 32)"
     ),
+
+  // Protege /api/cron/process-jobs — o cron da Vercel envia
+  // `Authorization: Bearer <CRON_SECRET>` automaticamente quando esta env
+  // var está configurada no projeto. Gerar com: openssl rand -hex 32
+  CRON_SECRET: z.string().min(1, "CRON_SECRET é obrigatório"),
 });
 
 export const env = envSchema.parse({
@@ -39,4 +44,5 @@ export const env = envSchema.parse({
   SHOPIFY_API_KEY: process.env.SHOPIFY_API_KEY,
   SHOPIFY_API_SECRET: process.env.SHOPIFY_API_SECRET,
   SHOPIFY_TOKEN_ENCRYPTION_KEY: process.env.SHOPIFY_TOKEN_ENCRYPTION_KEY,
+  CRON_SECRET: process.env.CRON_SECRET,
 });
