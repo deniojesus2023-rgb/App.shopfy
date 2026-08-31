@@ -2,7 +2,7 @@
 // ou mensagens internas de erro para o client, e para o form no client
 // conseguir renderizar erro de validação por campo.
 
-import { ForbiddenError, NotFoundError, UnauthorizedError, ValidationError } from "./errors";
+import { ConflictError, ForbiddenError, NotFoundError, UnauthorizedError, ValidationError } from "./errors";
 
 export type ActionResult<T> =
   | { ok: true; data: T }
@@ -20,7 +20,8 @@ export function actionError<T>(
     error instanceof UnauthorizedError ||
     error instanceof ForbiddenError ||
     error instanceof NotFoundError ||
-    error instanceof ValidationError
+    error instanceof ValidationError ||
+    error instanceof ConflictError
   ) {
     return { ok: false, error: error.message };
   }

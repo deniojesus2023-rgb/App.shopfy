@@ -26,7 +26,12 @@ export type WorkspacePermission =
   | "shopify:manage_stores" // conectar/desconectar loja Shopify — OWNER e ADMIN
   | "shopify:view_stores"
   | "shopify:view_catalog" // OWNER, ADMIN e MEMBER
-  | "shopify:sync_catalog"; // disparar importação/sincronização — OWNER e ADMIN
+  | "shopify:sync_catalog" // disparar importação/sincronização — OWNER e ADMIN
+  | "funnels:view"
+  | "funnels:create"
+  | "funnels:edit"
+  | "funnels:publish"
+  | "funnels:archive";
 
 const ROLE_PERMISSIONS: Record<WorkspaceRole, WorkspacePermission[]> = {
   OWNER: [
@@ -39,6 +44,11 @@ const ROLE_PERMISSIONS: Record<WorkspaceRole, WorkspacePermission[]> = {
     "shopify:view_stores",
     "shopify:view_catalog",
     "shopify:sync_catalog",
+    "funnels:view",
+    "funnels:create",
+    "funnels:edit",
+    "funnels:publish",
+    "funnels:archive",
   ],
   ADMIN: [
     "workspace:manage_members",
@@ -48,8 +58,12 @@ const ROLE_PERMISSIONS: Record<WorkspaceRole, WorkspacePermission[]> = {
     "shopify:view_stores",
     "shopify:view_catalog",
     "shopify:sync_catalog",
+    "funnels:view",
+    "funnels:create",
+    "funnels:edit",
+    "funnels:publish",
   ],
-  MEMBER: ["workspace:view_members", "shopify:view_stores", "shopify:view_catalog"],
+  MEMBER: ["workspace:view_members", "shopify:view_stores", "shopify:view_catalog", "funnels:view"],
 };
 
 export function roleHasPermission(

@@ -33,3 +33,11 @@ export class ValidationError extends Error {
     this.name = "ValidationError";
   }
 }
+
+/** Optimistic concurrency: o recurso mudou entre a leitura e a escrita (ex.: revision divergente). */
+export class ConflictError extends Error {
+  constructor(message = "O recurso foi alterado por outra ação. Recarregue e tente novamente.") {
+    super(message);
+    this.name = "ConflictError";
+  }
+}

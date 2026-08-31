@@ -18,7 +18,11 @@ export type AuditAction =
   | "shopify.store_disconnected"
   | "shopify.store_uninstalled_webhook"
   | "shopify.webhook_registration_failed"
-  | "catalog.sync_triggered";
+  | "catalog.sync_triggered"
+  | "funnel.created"
+  | "funnel.draft_updated"
+  | "funnel.published"
+  | "funnel.archived";
 
 interface LogAuditInput {
   workspaceId: string;

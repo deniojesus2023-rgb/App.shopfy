@@ -2,10 +2,11 @@
 
 SaaS multi-tenant para funis de vendas gamificados conectados a lojas Shopify.
 Este repositório contém a **Fase 0** (fundação, autenticação, workspaces,
-RBAC, auditoria), a **Fase 1A** (conexão de loja Shopify via OAuth + webhooks)
-e a **Fase 1B** (fila persistente + importação/sincronização de catálogo).
-Funil de vendas, storefront público, COD, gamificação, pagamentos, fornecedores
-e WhatsApp ainda não foram implementados.
+RBAC, auditoria), a **Fase 1A** (conexão de loja Shopify via OAuth + webhooks),
+a **Fase 1B** (fila persistente + importação/sincronização de catálogo) e a
+**Fase 2A** (motor de configuração de funis: draft/versão/publicação).
+Editor visual drag-and-drop, storefront público, COD funcional, gamificação,
+pagamentos, fornecedores e WhatsApp ainda não foram implementados.
 
 ## Stack
 
@@ -179,6 +180,42 @@ Deliberadamente fora de escopo: `write_products`, `read_customers`,
   resposta é usado para adiar a próxima página quando a Shopify sinaliza
   pouca capacidade restante.
 
+## Funis — motor de configuração (Fase 2A)
+
+- **Funnel vs. FunnelVersion**: `Funnel` é a identidade lógica (nome, slug,
+  loja, produto principal); `FunnelVersion` é uma versão do config, imutável
+  assim que `PUBLISHED`. Editar sempre acontece numa `DRAFT` — nunca na
+  versão publicada.
+- **Config versionado**: `modules/funnels/config/schema.ts` define
+  `FunnelConfigV1` (tema + até 20 etapas de 7 tipos possíveis, via
+  `z.discriminatedUnion`). `parseFunnelConfig(configSchemaVersion, config)`
+  é o único ponto de leitura do JSON armazenado. `migrateFunnelConfig`
+  existe como contrato para quando uma v2 de schema aparecer — hoje só há
+  v1, então o contrato é só passagem direta.
+- **Sem HTML/CSS/JS arbitrário**: todo texto livre passa por `safeText()`
+  (rejeita tags, `javascript:`, handlers de evento) e toda cor por um regex
+  hexadecimal estrito.
+- **Validação semântica** (`semantic-validation.ts`), além do Zod
+  estrutural: exatamente uma etapa `PRODUCT` e uma `SUCCESS` habilitadas,
+  `COD_FORM` exige `PAYMENT_CHOICE` com `allowCod=true`, `UPSELL` exige um
+  `FunnelProduct` com `role=UPSELL`, e nenhum `FunnelProduct` pode apontar
+  para um produto de outro workspace/loja.
+- **Optimistic concurrency**: `FunnelVersion.revision` — todo save de draft
+  usa `WHERE revision = <valor que o cliente tinha>`; se não bateu (outra
+  aba salvou primeiro), `ConflictError` (a UI pede para recarregar).
+- **Publicação**: valida, roda a validação semântica, e numa transação
+  marca a versão publicada anterior como `SUPERSEDED`, a draft atual como
+  `PUBLISHED`, e atualiza `Funnel.publishedVersionId`. Editar depois clona
+  (deep clone via JSON) a versão publicada como a próxima `DRAFT` —
+  `getOrCreateDraftVersion` é o único código-caminho que cria uma
+  `FunnelVersion(DRAFT)`, garantindo no máximo uma draft ativa por funil.
+- **Template seed**: `progress-reward-cod-v1` (`prisma/seed.ts`, dados em
+  `modules/funnels/config/seed-templates.ts`) — rode `npm run db:seed`
+  depois do `db:push`.
+- **Editor desta fase**: `/[workspaceSlug]/funnels/[funnelId]` tem um
+  textarea de JSON validado no servidor — rotulado como temporário; o
+  editor visual vem numa fase futura.
+
 ## Testes
 
 ```bash
@@ -191,4 +228,10 @@ upsert idempotente de produto/variante (incluindo "full sync executado duas
 vezes não duplica"), isolamento por loja, transformação Shopify → modelo
 local, paginação do full sync, webhook `products/update`/`products/delete`
 → enfileiramento de job, claim/retry/backoff da fila, e transições de
-`CatalogSyncRun`. A Shopify é sempre mockada — nenhum teste faz chamada real.
+`CatalogSyncRun`. Da Fase 2A: parser/discriminated union de `FunnelConfigV1`
+(estrutural, incluindo rejeição de HTML/JS embutido), validação semântica
+completa (PRODUCT/SUCCESS únicos, COD_FORM↔PAYMENT_CHOICE, UPSELL↔FunnelProduct,
+produto cross-workspace/cross-loja rejeitado), criação de funil, optimistic
+concurrency (conflito de revision), publicação (imutabilidade da versão
+publicada, supersede, criação automática de v2 draft), slug e RBAC. A Shopify
+é sempre mockada — nenhum teste faz chamada real.

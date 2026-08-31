@@ -33,6 +33,7 @@ export default async function WorkspaceLayout({
               <nav className="flex gap-4 text-sm text-neutral-600">
                 <Link href={`/${workspace.slug}`}>Dashboard</Link>
                 <Link href={`/${workspace.slug}/stores`}>Lojas</Link>
+                <Link href={`/${workspace.slug}/funnels`}>Funis</Link>
                 <Link href={`/${workspace.slug}/members`}>Membros</Link>
               </nav>
             </div>

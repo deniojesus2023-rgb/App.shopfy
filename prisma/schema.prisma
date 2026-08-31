@@ -24,10 +24,12 @@ model User {
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
-  memberships        WorkspaceMember[]
-  sentInvitations    Invitation[]        @relation("InvitationsSentByUser")
-  auditLogs          AuditLog[]
-  shopifyOAuthStates ShopifyOAuthState[]
+  memberships           WorkspaceMember[]
+  sentInvitations       Invitation[]        @relation("InvitationsSentByUser")
+  auditLogs             AuditLog[]
+  shopifyOAuthStates    ShopifyOAuthState[]
+  createdFunnels        Funnel[]
+  createdFunnelVersions FunnelVersion[]
 
   @@map("users")
 }
@@ -52,6 +54,9 @@ model Workspace {
   catalogSyncRuns      CatalogSyncRun[]
   products             Product[]
   productVariants      ProductVariant[]
+  funnels              Funnel[]
+  funnelVersions       FunnelVersion[]
+  funnelProducts       FunnelProduct[]
 
   @@map("workspaces")
 }
@@ -162,6 +167,7 @@ model ShopifyStore {
   webhookEvents   ShopifyWebhookEvent[]
   catalogSyncRuns CatalogSyncRun[]
   products        Product[]
+  funnels         Funnel[]
 
   @@index([workspaceId])
   @@map("shopify_stores")
@@ -338,10 +344,11 @@ model Product {
   updatedAt         DateTime             @updatedAt
   deletedAt         DateTime?
 
-  workspace    Workspace        @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  shopifyStore ShopifyStore     @relation(fields: [shopifyStoreId], references: [id], onDelete: Cascade)
-  lastSeenRun  CatalogSyncRun?  @relation(fields: [lastSeenSyncRunId], references: [id], onDelete: SetNull)
-  variants     ProductVariant[]
+  workspace      Workspace        @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  shopifyStore   ShopifyStore     @relation(fields: [shopifyStoreId], references: [id], onDelete: Cascade)
+  lastSeenRun    CatalogSyncRun?  @relation(fields: [lastSeenSyncRunId], references: [id], onDelete: SetNull)
+  variants       ProductVariant[]
+  funnelProducts FunnelProduct[]
 
   @@unique([shopifyStoreId, shopifyProductId])
   @@index([workspaceId, deletedAt])
@@ -382,4 +389,117 @@ model ProductVariant {
   @@index([workspaceId])
   @@index([productId])
   @@map("product_variants")
+}
+
+// ---------------------------------------------------------------------------
+// Funnels — Fase 2A (motor de configuração: draft, versão, publicação)
+// ---------------------------------------------------------------------------
+
+enum FunnelStatus {
+  DRAFT
+  PUBLISHED
+  ARCHIVED
+}
+
+model Funnel {
+  id                 String       @id @default(cuid())
+  workspaceId        String
+  shopifyStoreId     String
+  name               String
+  slug               String
+  status             FunnelStatus @default(DRAFT)
+  publishedVersionId String?      @unique
+  createdByUserId    String
+  createdAt          DateTime     @default(now())
+  updatedAt          DateTime     @updatedAt
+  archivedAt         DateTime?
+
+  workspace        Workspace       @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  shopifyStore     ShopifyStore    @relation(fields: [shopifyStoreId], references: [id], onDelete: Cascade)
+  createdBy        User            @relation(fields: [createdByUserId], references: [id])
+  // 1–1 com a versão atualmente publicada. Nula enquanto o funil nunca foi
+  // publicado. Nunca aponta para uma versão DRAFT ou SUPERSEDED.
+  publishedVersion FunnelVersion?  @relation("PublishedVersion", fields: [publishedVersionId], references: [id], onDelete: SetNull)
+  versions         FunnelVersion[] @relation("FunnelVersions")
+  products         FunnelProduct[]
+
+  // Slug único por workspace (não globalmente) — domínio próprio é fase futura.
+  @@unique([workspaceId, slug])
+  @@index([workspaceId])
+  @@index([shopifyStoreId])
+  @@map("funnels")
+}
+
+enum FunnelVersionStatus {
+  DRAFT
+  PUBLISHED
+  SUPERSEDED
+}
+
+/// Uma versão é imutável assim que passa a PUBLISHED — nenhuma rota da
+/// aplicação faz `update` de `config` numa versão que não esteja DRAFT.
+/// `revision` é o campo de optimistic concurrency: todo update de draft usa
+/// `WHERE id = ? AND revision = ?`, incrementando `revision` no mesmo update.
+model FunnelVersion {
+  id                  String              @id @default(cuid())
+  workspaceId         String
+  funnelId            String
+  versionNumber       Int
+  configSchemaVersion Int
+  config              Json
+  status              FunnelVersionStatus @default(DRAFT)
+  revision            Int                 @default(0)
+  createdByUserId     String
+  createdAt           DateTime            @default(now())
+  updatedAt           DateTime            @updatedAt
+  publishedAt         DateTime?
+
+  workspace          Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  funnel             Funnel    @relation("FunnelVersions", fields: [funnelId], references: [id], onDelete: Cascade)
+  createdBy          User      @relation(fields: [createdByUserId], references: [id])
+  publishedForFunnel Funnel?   @relation("PublishedVersion")
+
+  @@unique([funnelId, versionNumber])
+  @@index([funnelId, status])
+  @@map("funnel_versions")
+}
+
+enum FunnelProductRole {
+  PRIMARY
+  UPSELL
+  DOWNSELL
+}
+
+model FunnelProduct {
+  id          String            @id @default(cuid())
+  workspaceId String
+  funnelId    String
+  productId   String
+  role        FunnelProductRole @default(PRIMARY)
+  createdAt   DateTime          @default(now())
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  funnel    Funnel    @relation(fields: [funnelId], references: [id], onDelete: Cascade)
+  product   Product   @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@unique([funnelId, productId])
+  @@index([funnelId])
+  @@index([productId])
+  @@map("funnel_products")
+}
+
+/// Templates são globais (não pertencem a um workspace) — catálogo
+/// compartilhado por toda a plataforma.
+model FunnelTemplate {
+  id                  String   @id @default(cuid())
+  key                 String   @unique
+  name                String
+  description         String?
+  configSchemaVersion Int
+  defaultConfig       Json
+  isActive            Boolean  @default(true)
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  @@map("funnel_templates")
 }
