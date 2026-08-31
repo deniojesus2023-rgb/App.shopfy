@@ -26,7 +26,11 @@ export type RuntimeAction =
   // Substitui o estado inteiro por uma sessão restaurada do sessionStorage
   // (já validada pelo caller: mesma funnelVersionId). Único jeito de repor
   // seleções/etapa/progresso de uma vez sem reconstruir passo a passo.
-  | { type: "RESTORE"; state: RuntimeState };
+  | { type: "RESTORE"; state: RuntimeState }
+  // Pula direto para uma etapa SEM checar `canNavigateToStep` — só para o
+  // preview do builder administrativo (o admin pode inspecionar qualquer
+  // etapa livremente). O storefront público real nunca despacha isto.
+  | { type: "JUMP"; stepId: string };
 
 /** Etapas habilitadas, na ordem em que o consumidor navega — único lugar que decide essa ordem. */
 export function getEnabledSteps(steps: FunnelStep[]): FunnelStep[] {
@@ -109,6 +113,8 @@ export function runtimeReducer(state: RuntimeState, action: RuntimeAction): Runt
       return { ...state, upsellAccepted: false };
     case "RESTORE":
       return action.state;
+    case "JUMP":
+      return { ...state, currentStepId: action.stepId };
     default:
       return state;
   }

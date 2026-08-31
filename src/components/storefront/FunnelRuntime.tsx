@@ -23,7 +23,22 @@ function findRewardInitialProgress(resolved: ResolvedFunnel): number {
   return rewardStep && rewardStep.type === "REWARD" ? rewardStep.config.initialProgress : 0;
 }
 
-export function FunnelRuntime({ resolved }: { resolved: ResolvedFunnel }) {
+export function FunnelRuntime({
+  resolved,
+  forcedStepId,
+  disableSessionPersistence = false,
+}: {
+  resolved: ResolvedFunnel;
+  /**
+   * Só usado pelo preview do builder administrativo: sincroniza a etapa
+   * exibida com a etapa selecionada no editor, pulando a checagem de
+   * navegação (o admin pode inspecionar qualquer etapa). O storefront
+   * público nunca passa isto.
+   */
+  forcedStepId?: string;
+  /** Idem — o preview do builder não deve gravar/restaurar sessionStorage. */
+  disableSessionPersistence?: boolean;
+}) {
   const enabledSteps = getEnabledSteps(resolved.config.steps);
 
   const [state, dispatch] = useReducer(
@@ -43,6 +58,7 @@ export function FunnelRuntime({ resolved }: { resolved: ResolvedFunnel }) {
   // pertence exatamente a esta funnelVersionId — nunca mistura estado de
   // versões diferentes do mesmo funil.
   useEffect(() => {
+    if (disableSessionPersistence) return;
     const restored = readRuntimeSession(resolved.funnel.id, resolved.version.id);
     if (restored) {
       dispatch({ type: "RESTORE", state: restored });
@@ -51,8 +67,16 @@ export function FunnelRuntime({ resolved }: { resolved: ResolvedFunnel }) {
   }, []);
 
   useEffect(() => {
+    if (disableSessionPersistence) return;
     writeRuntimeSession(state);
-  }, [state]);
+  }, [state, disableSessionPersistence]);
+
+  useEffect(() => {
+    if (forcedStepId && forcedStepId !== state.currentStepId) {
+      dispatch({ type: "JUMP", stepId: forcedStepId });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [forcedStepId]);
 
   const currentIndex = enabledSteps.findIndex((s) => s.id === state.currentStepId);
   const currentStep = enabledSteps[currentIndex];
@@ -83,11 +107,11 @@ export function FunnelRuntime({ resolved }: { resolved: ResolvedFunnel }) {
             onCodSubmitted: () => dispatch({ type: "NEXT_STEP", steps: resolved.config.steps }),
             onAcceptUpsell: () => {
               dispatch({ type: "ACCEPT_UPSELL" });
-              clearRuntimeSession(resolved.funnel.id);
+              if (!disableSessionPersistence) clearRuntimeSession(resolved.funnel.id);
             },
             onDeclineUpsell: () => {
               dispatch({ type: "DECLINE_UPSELL" });
-              clearRuntimeSession(resolved.funnel.id);
+              if (!disableSessionPersistence) clearRuntimeSession(resolved.funnel.id);
             },
           }}
         />

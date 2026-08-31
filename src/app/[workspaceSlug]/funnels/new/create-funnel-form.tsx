@@ -40,7 +40,9 @@ export function CreateFunnelForm({
 
   useEffect(() => {
     if (state?.ok) {
-      router.push(`/${workspaceSlug}/funnels/${state.data.funnelId}`);
+      // Vai direto para o builder — o funil recém-criado já nasce com uma
+      // v1 DRAFT baseada no template escolhido.
+      router.push(`/${workspaceSlug}/funnels/${state.data.funnelId}/builder`);
     }
   }, [state, router, workspaceSlug]);
 

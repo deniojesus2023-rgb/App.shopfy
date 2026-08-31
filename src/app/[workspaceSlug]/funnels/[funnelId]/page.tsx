@@ -6,7 +6,6 @@ import { parseFunnelConfig } from "@/modules/funnels/config/parse";
 import { getFunnelForWorkspace } from "@/modules/funnels/admin/service";
 import { roleHasPermission } from "@/modules/workspaces/permissions";
 import { requireWorkspaceMember } from "@/modules/workspaces/tenant";
-import { ConfigEditor } from "./config-editor";
 import { ArchiveButton, CreateDraftButton, PublishButton } from "./funnel-actions";
 import { PreviewDraftButton } from "./preview-draft-button";
 
@@ -132,13 +131,9 @@ export default async function FunnelDetailPage({
           </CardHeader>
           <CardContent>
             {draftVersion ? (
-              <ConfigEditor
-                workspaceSlug={workspaceSlug}
-                funnelId={funnel.id}
-                versionId={draftVersion.id}
-                revision={draftVersion.revision}
-                initialConfig={draftVersion.config}
-              />
+              <Button type="button" asChild>
+                <Link href={`/${workspaceSlug}/funnels/${funnel.id}/builder`}>Editar funil</Link>
+              </Button>
             ) : (
               <div className="flex flex-col items-start gap-3">
                 <p className="text-sm text-neutral-600">

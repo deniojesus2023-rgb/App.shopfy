@@ -215,9 +215,8 @@ Deliberadamente fora de escopo: `write_products`, `read_customers`,
 - **Template seed**: `progress-reward-cod-v1` (`prisma/seed.ts`, dados em
   `modules/funnels/config/seed-templates.ts`) — rode `npm run db:seed`
   depois do `db:push`.
-- **Editor desta fase**: `/[workspaceSlug]/funnels/[funnelId]` tem um
-  textarea de JSON validado no servidor — rotulado como temporário; o
-  editor visual vem numa fase futura.
+- **Editor visual**: o textarea de JSON temporário foi substituído pelo
+  Funnel Builder (ver Fase 2C) — `/[workspaceSlug]/funnels/[funnelId]/builder`.
 
 ## Storefront público (Fase 2B)
 
@@ -268,6 +267,70 @@ Deliberadamente fora de escopo: `write_products`, `read_customers`,
   (sem nonce por request), ponto de partida documentado, não blindagem
   completa.
 
+## Funnel Builder MVP (Fase 2C)
+
+- **`FunnelConfigV1` continua sendo a única fonte de verdade**: o builder
+  não introduz um segundo modelo de estado — cada editor lê/escreve
+  diretamente pedaços do mesmo config que os módulos de Fase 2A/2B já
+  entendem. Não há drag-and-drop livre, COD real, pedidos Shopify,
+  pagamentos reais, gamification engine, fornecedores, WhatsApp, domínios
+  próprios ou novos tipos de step nesta fase.
+- **Layout**: desktop usa três colunas fixas (lista de etapas | painel de
+  propriedades | preview) — não é um clone de Figma/Canva, é
+  "orientado a propriedades". Mobile usa as mesmas três áreas como abas
+  (nunca três colunas espremidas).
+- **Estado**: `useReducer` simples (`components/builder/builder-state.ts`,
+  `BuilderState`/`builderReducer`) — sem Redux/Zustand. Guarda
+  `originalConfig`, `draftConfig`, `revision`, seleção atual, `dirty` e o
+  status de salvamento. Reordenar etapas é só via botões ▲/▼
+  (`renumberOrders` sempre renumera `order` 0..N-1 pela ordem *posicional*
+  atual do array — nunca reordena pelo `order` antigo, ou desfaria o swap
+  que acabou de acontecer).
+- **8 editores por tipo de etapa** (`components/builder/editors/*`), todos
+  controlados e validados pelo shape do Zod existente — nenhum estado novo
+  duplicado. Regras notáveis: `PaymentChoiceEditor` desabilita o checkbox
+  do único método ainda ativo (nunca deixa o usuário zerar os dois, o que
+  o `.refine()` do schema rejeitaria de qualquer forma); `CodFormEditor`
+  reordena campos livremente (o schema já suporta ordem por array) e só
+  mostra "Obrigatório" quando o campo está habilitado; `OfferStepEditor`
+  mostra o preço (`unitPrice × quantity`, de `runtime/pricing.ts`) como
+  somente leitura, com um TODO explícito para a futura Pricing Engine —
+  nunca editável manualmente aqui; `UpsellEditor` só permite associar um
+  produto da mesma `ShopifyStore` do funil (`setUpsellProductAction`
+  rejeita cross-store/cross-workspace no servidor, é a autoridade real).
+- **Preview = mesmo renderer do storefront**: `PreviewPanel` monta um
+  `ResolvedFunnel` inteiramente em memória (nunca uma chamada de rede) e
+  renderiza com o mesmíssimo `FunnelRuntime`/`StepRenderer` da Fase 2B —
+  "um renderer, uma fonte de verdade". Para isso, `FunnelRuntime` ganhou
+  `forcedStepId` (pula a checagem de navegação do visitante, só usado
+  aqui) e `disableSessionPersistence` (o preview nunca lê/escreve
+  `sessionStorage`). Nenhum endpoint público novo foi criado — o preview
+  vive dentro da rota autenticada do builder.
+- **Validação em duas camadas, sem funções novas no servidor**: salvar
+  draft continua exigindo só validação estrutural (Zod, via
+  `updateDraftConfig`, inalterado); publicar continua exigindo também
+  `validateFunnelSemantics` (inalterada). O builder só passou a rodar essa
+  mesma função pura também no cliente (`workspaceId: "self"`, deliberado —
+  é só UX/gating), para popular o resumo de erros e bloquear o botão
+  "Publicar" antes de bater no servidor, que segue sendo a autoridade
+  final.
+- **Salvar é manual** ("Guardar cambios") — sem autosave. Envia o config +
+  a `revision` esperada; em conflito de concorrência otimista
+  (`ActionResult.code === "CONFLICT"`, novo campo em `action-result.ts`)
+  mostra um modal ("Este embudo fue modificado en otra sesión.") com duas
+  opções explícitas — recarregar a página ou continuar editando local —
+  nunca faz merge automático.
+- **RBAC**: `funnels:view` só lê, `funnels:edit` pode editar o draft,
+  `funnels:publish` pode publicar — a UI esconde/desabilita controles
+  conforme a permissão, mas o servidor (`requireWorkspacePermission` em
+  cada Server Action) continua sendo a autoridade.
+- **Auditoria**: sem eventos novos — continua usando
+  `FUNNEL_DRAFT_UPDATED`/`FUNNEL_PUBLISHED` (Fase 2A), disparados só em
+  save/publish reais, nunca por tecla digitada.
+- **Fluxo de criação**: `/[workspaceSlug]/funnels/new` virou um wizard
+  (Loja → Produto → Plantilla → Nome) que, ao concluir, abre o builder do
+  funil recém-criado diretamente — não mais a página de resumo.
+
 ## Testes
 
 ```bash
@@ -294,5 +357,25 @@ oferta/pagamento, restore de sessão), sessão nunca contém PII, preview
 (assinatura, adulteração, expiração), CSS variables de tema, `StepRenderer`
 para os 7 tipos e validação visual do formulário COD (react-hook-form +
 zod), com testes de componente em jsdom para os pontos de acessibilidade
-viáveis nesta fase (roles, labels, `aria-live`). A Shopify é sempre mockada
-— nenhum teste faz chamada real.
+viáveis nesta fase (roles, labels, `aria-live`). Da Fase 2C: reducer do
+builder (`builder-state.ts` — dirty, save success/error/conflict,
+`DISMISS_CONFLICT` sem merge, `MOVE_STEP`/renumeração de `order` sem
+lacunas nem duplicatas), isolamento tenant de `searchStoreProductsAction`,
+rejeição cross-store/cross-workspace e substituição (não acumulação) de
+`setUpsellProductAction`, mapeamento erro-semântico→etapa
+(`validation-mapping.ts`), editores de `OFFER` (preço somente leitura,
+add/remover/reordenar), `PAYMENT_CHOICE` (nunca zera os dois métodos),
+`COD_FORM` (obrigatório implica habilitado, quick-add só lista campos
+ausentes), `SUCCESS` e `ThemeEditor`/`ColorField` (validação de hex), e um
+teste de integração do `FunnelBuilder` (dirty state, save com sucesso,
+modal de conflito com as duas opções, `Publicar` bloqueado com erro
+semântico, modo somente leitura). `PreviewPanel` é testado confirmando que
+renderiza pelo mesmo `FunnelRuntime`/`StepRenderer` do storefront público —
+não um mock separado. A Shopify é sempre mockada — nenhum teste faz
+chamada real.
+
+Os testes de componente (`*.test.tsx`, ambiente jsdom) e os de lógica pura
+(`*.test.ts`, ambiente node) rodam juntos neste mesmo comando —
+`vitest.config.ts` inclui as duas extensões e registra o `cleanup()` do
+Testing Library em `afterEach` (`src/test/setup-jsdom.ts`), já que
+`test.globals` fica desligado neste projeto.

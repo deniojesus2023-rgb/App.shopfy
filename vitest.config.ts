@@ -2,9 +2,14 @@ import path from "node:path";
 import { defineConfig } from "vitest/config";
 
 export default defineConfig({
+  // tsconfig.json usa jsx:"preserve" (Next.js faz a transformação via SWC
+  // no build normal); o Vite/oxc precisa da própria transformação para
+  // rodar os testes de componentes .tsx fora do pipeline do Next.
+  oxc: { jsx: { runtime: "automatic" } },
   test: {
     environment: "node",
-    include: ["src/**/*.test.ts"],
+    include: ["src/**/*.test.ts", "src/**/*.test.tsx"],
+    setupFiles: ["src/test/setup-jsdom.ts"],
     env: {
       DATABASE_URL: "postgresql://user:password@localhost:5432/app_shopfy_test",
       CLERK_SECRET_KEY: "sk_test_dummy",
