@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import type { FunnelConfigV1 } from "./schema";
+import type { FunnelConfig } from "./schema";
 import { validateFunnelSemantics, type FunnelProductRef } from "./semantic-validation";
 
 const theme = {
@@ -76,8 +76,8 @@ function upsellStep(overrides: Partial<{ id: string; order: number; enabled: boo
   };
 }
 
-function config(steps: FunnelConfigV1["steps"]): FunnelConfigV1 {
-  return { schemaVersion: 1, theme, steps, settings: {} };
+function config(steps: FunnelConfig["steps"]): FunnelConfig {
+  return { schemaVersion: 2, theme, steps, settings: {} };
 }
 
 const baseContext = { workspaceId: "ws_1", shopifyStoreId: "store_1" };

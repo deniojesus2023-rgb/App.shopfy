@@ -1,11 +1,11 @@
-import { funnelConfigV1Schema } from "./schema";
+import { funnelConfigV2Schema } from "./schema";
 
 // Config inicial do template seed — validado pelo mesmo schema Zod usado
 // para config de usuário, para nunca divergir do que a aplicação aceitaria.
 // Separado de prisma/seed.ts para poder ser importado em testes sem
 // disparar a execução do script de seed (que toca o banco).
-export const progressRewardCodDefaultConfig = funnelConfigV1Schema.parse({
-  schemaVersion: 1,
+export const progressRewardCodDefaultConfig = funnelConfigV2Schema.parse({
+  schemaVersion: 2,
   theme: {
     primaryColor: "#111827",
     backgroundColor: "#FFFFFF",
@@ -52,11 +52,28 @@ export const progressRewardCodDefaultConfig = funnelConfigV1Schema.parse({
       enabled: true,
       order: 2,
       config: {
+        // Seed genérico não conhece o preço real do produto do lojista —
+        // UNIT_MULTIPLIER (spec item 22) mantém o comportamento correto
+        // (unitPrice × quantity) até o lojista configurar FIXED_TOTAL no
+        // Builder com os valores reais dele (ex.: 89.900/149.900/199.900).
         offers: [
-          { id: "qty-1", quantity: 1, label: "1 unidade" },
-          { id: "qty-2", quantity: 2, label: "2 unidades", badge: "MAIS ESCOLHIDO" },
-          { id: "qty-3", quantity: 3, label: "3 unidades", badge: "MAIOR BENEFÍCIO" },
+          { id: "qty-1", quantity: 1, label: "1 unidade", pricing: { type: "UNIT_MULTIPLIER" } },
+          {
+            id: "qty-2",
+            quantity: 2,
+            label: "2 unidades",
+            badge: "MAIS ESCOLHIDO",
+            pricing: { type: "UNIT_MULTIPLIER" },
+          },
+          {
+            id: "qty-3",
+            quantity: 3,
+            label: "3 unidades",
+            badge: "MAIOR BENEFÍCIO",
+            pricing: { type: "UNIT_MULTIPLIER" },
+          },
         ],
+        defaultOfferId: "qty-1",
       },
     },
     {
@@ -126,7 +143,7 @@ export const PROGRESS_REWARD_COD_TEMPLATE = {
   key: "progress-reward-cod-v1",
   name: "Progress Reward COD",
   description: "Funil com barra de progresso/recompensa, ofertas por quantidade e checkout COD.",
-  configSchemaVersion: 1,
+  configSchemaVersion: 2,
   defaultConfig: progressRewardCodDefaultConfig,
   isActive: true,
 } as const;

@@ -4,7 +4,7 @@ import { unstable_cache } from "next/cache";
 
 import { prisma } from "@/lib/db";
 import { parseFunnelConfig } from "../config/parse";
-import type { FunnelConfigV1 } from "../config/schema";
+import type { FunnelConfig } from "../config/schema";
 import { funnelPublicCacheTag } from "./cache";
 
 export interface ResolvedProductSnapshot {
@@ -22,8 +22,10 @@ export interface ResolvedUpsellProduct {
 export interface ResolvedFunnel {
   funnel: { id: string; name: string; slug: string; publicId: string };
   version: { id: string; versionNumber: number };
-  config: FunnelConfigV1;
+  config: FunnelConfig;
   snapshot: ResolvedProductSnapshot;
+  /** ISO 4217 — sempre a da ShopifyStore do funil (Fase 4A). Nunca escolhida no client. */
+  currency: string;
   // Decorativo apenas (título/imagem) — não é um snapshot congelado como o
   // produto principal; não há preço de upsell nesta fase.
   upsellProduct: ResolvedUpsellProduct | null;
@@ -57,6 +59,7 @@ async function resolvePublishedFunnelUncached(publicId: string): Promise<Resolve
       publicId: true,
       status: true,
       publishedVersionId: true,
+      shopifyStore: { select: { currency: true } },
     },
   });
 
@@ -76,7 +79,7 @@ async function resolvePublishedFunnelUncached(publicId: string): Promise<Resolve
     return null;
   }
 
-  let config: FunnelConfigV1;
+  let config: FunnelConfig;
   try {
     config = parseFunnelConfig(version.configSchemaVersion, version.config);
   } catch {
@@ -95,6 +98,7 @@ async function resolvePublishedFunnelUncached(publicId: string): Promise<Resolve
       unitPrice: version.productSnapshot.unitPrice.toNumber(),
       compareAtPrice: version.productSnapshot.compareAtPrice?.toNumber() ?? null,
     },
+    currency: funnel.shopifyStore.currency,
     upsellProduct: await loadUpsellProduct(funnel.id),
     isPreview: false,
   };
@@ -124,13 +128,15 @@ export async function resolveFunnelVersionForPreview(
   const version = await prisma.funnelVersion.findFirst({
     where: { id: versionId, funnelId },
     include: {
-      funnel: { select: { id: true, name: true, slug: true, publicId: true } },
+      funnel: {
+        select: { id: true, name: true, slug: true, publicId: true, shopifyStore: { select: { currency: true } } },
+      },
       productSnapshot: true,
     },
   });
   if (!version) return null;
 
-  let config: FunnelConfigV1;
+  let config: FunnelConfig;
   try {
     config = parseFunnelConfig(version.configSchemaVersion, version.config);
   } catch {
@@ -153,6 +159,7 @@ export async function resolveFunnelVersionForPreview(
     version: { id: version.id, versionNumber: version.versionNumber },
     config,
     snapshot,
+    currency: version.funnel.shopifyStore.currency,
     upsellProduct: await loadUpsellProduct(funnelId),
     isPreview: true,
   };

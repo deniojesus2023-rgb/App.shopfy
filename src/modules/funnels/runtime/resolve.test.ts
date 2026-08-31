@@ -7,6 +7,7 @@ interface FakeFunnel {
   publicId: string;
   status: string;
   publishedVersionId: string | null;
+  shopifyStore: { currency: string };
 }
 interface FakeSnapshot {
   title: string;
@@ -22,6 +23,7 @@ interface FakeVersion {
   config: unknown;
   status: string;
   productSnapshot: FakeSnapshot | null;
+  funnel?: { id: string; name: string; slug: string; publicId: string; shopifyStore: { currency: string } };
 }
 
 let funnels: FakeFunnel[] = [];
@@ -110,6 +112,7 @@ describe("resolvePublicFunnel", () => {
       publicId: "pub_1",
       status: "PUBLISHED",
       publishedVersionId: "v1",
+      shopifyStore: { currency: "COP" },
     });
     versions.push({
       id: "v1",
@@ -141,6 +144,7 @@ describe("resolvePublicFunnel", () => {
       publicId: "pub_1",
       status: "DRAFT",
       publishedVersionId: null,
+      shopifyStore: { currency: "COP" },
     });
     expect(await resolvePublicFunnel("pub_1")).toBeNull();
   });
@@ -153,6 +157,7 @@ describe("resolvePublicFunnel", () => {
       publicId: "pub_1",
       status: "ARCHIVED",
       publishedVersionId: "v1",
+      shopifyStore: { currency: "COP" },
     });
     versions.push({
       id: "v1",
@@ -174,6 +179,7 @@ describe("resolvePublicFunnel", () => {
       publicId: "pub_1",
       status: "PUBLISHED",
       publishedVersionId: "v1",
+      shopifyStore: { currency: "COP" },
     });
     versions.push({
       id: "v1",
@@ -195,6 +201,7 @@ describe("resolvePublicFunnel", () => {
       publicId: "pub_1",
       status: "PUBLISHED",
       publishedVersionId: "v1",
+      shopifyStore: { currency: "COP" },
     });
     versions.push({
       id: "v1",
@@ -216,6 +223,7 @@ describe("resolvePublicFunnel", () => {
       publicId: "pub_1",
       status: "PUBLISHED",
       publishedVersionId: "v1",
+      shopifyStore: { currency: "COP" },
     });
     versions.push({
       id: "v1",
@@ -240,6 +248,7 @@ describe("resolveFunnelVersionForPreview", () => {
       config: validConfig(),
       status: "DRAFT",
       productSnapshot: null,
+      funnel: { id: "f1", name: "Funil", slug: "s", publicId: "pub_1", shopifyStore: { currency: "COP" } },
     });
     funnelProducts.push({
       funnelId: "f1",

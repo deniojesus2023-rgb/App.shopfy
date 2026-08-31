@@ -4,7 +4,7 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { FunnelConfigV1 } from "@/modules/funnels/config/schema";
+import type { FunnelConfig } from "@/modules/funnels/config/schema";
 import { FunnelBuilder, type FunnelBuilderProps } from "./FunnelBuilder";
 
 const updateDraftConfigActionMock = vi.fn();
@@ -30,9 +30,9 @@ const theme = {
   buttonStyle: "SOLID" as const,
 };
 
-function buildConfig(): FunnelConfigV1 {
+function buildConfig(): FunnelConfig {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     theme,
     settings: {},
     steps: [
@@ -61,6 +61,7 @@ function baseProps(overrides: Partial<FunnelBuilderProps> = {}): FunnelBuilderPr
     version: { id: "version-1", config: buildConfig(), revision: 1 },
     primaryProductId: "prod-1",
     snapshot: { title: "Produto", featuredImageUrl: null, unitPrice: 100, compareAtPrice: null },
+    currency: "COP",
     initialUpsellProduct: null,
     canEdit: true,
     canPublish: true,

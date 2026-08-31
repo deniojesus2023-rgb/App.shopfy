@@ -47,6 +47,7 @@ export default async function FunnelBuilderPage({
       version={{ id: draftVersion.id, config: resolved.config, revision: draftVersion.revision }}
       primaryProductId={primaryProduct.productId}
       snapshot={resolved.snapshot}
+      currency={funnel.shopifyStore.currency}
       initialUpsellProduct={
         resolved.upsellProduct
           ? {

@@ -82,6 +82,8 @@ export function FunnelRuntime({
   const currentIndex = enabledSteps.findIndex((s) => s.id === state.currentStepId);
   const currentStep = enabledSteps[currentIndex];
   const hasNextStep = currentIndex >= 0 && currentIndex < enabledSteps.length - 1;
+  const offerStep = resolved.config.steps.find((s) => s.type === "OFFER" && s.enabled);
+  const offerConfig = offerStep?.type === "OFFER" ? offerStep.config : null;
 
   if (!currentStep) {
     return null;
@@ -98,6 +100,8 @@ export function FunnelRuntime({
           state={state}
           theme={resolved.config.theme}
           snapshot={resolved.snapshot}
+          currency={resolved.currency}
+          offerConfig={offerConfig}
           upsellProduct={resolved.upsellProduct}
           hasNextStep={hasNextStep}
           funnelPublicId={resolved.funnel.publicId}

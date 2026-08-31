@@ -97,14 +97,15 @@ export async function processShopifyOrderCreateJob(payload: ShopifyOrderCreatePa
     throw new NonRetryableJobError("Loja Shopify não está conectada.");
   }
 
-  // Fidelidade do quote: sem `variantId`, o total que a Shopify calcula é
-  // exatamente Σ(unitPrice × quantity). Se o Order local tiver desconto ou
-  // frete (V1 nunca tem, mas uma Pricing Engine futura pode), esse mapeamento
-  // deixaria de representar o que o cliente aceitou — falha fechada antes de
-  // criar qualquer coisa lá, em vez de cobrar um valor divergente.
-  const lineItemsTotal = roundMoney(
-    order.items.reduce((sum, item) => sum + Number(item.unitPrice) * item.quantity, 0)
-  );
+  // Fidelidade do quote: cada OrderItem já carrega `lineTotal` EXATO (sem
+  // nenhuma divisão) — é isto, e não `unitPrice × quantity`, que precisa
+  // bater com `Order.total` (uma oferta FIXED_TOTAL com quantity que não
+  // divide o total em centavos exatos torna `unitPrice` só informativo,
+  // nunca reconstituível por multiplicação; ver modules/orders/pricing.ts).
+  // Se um dia houver frete/múltiplos itens e a soma não bater, falha
+  // fechada antes de criar qualquer coisa na Shopify, em vez de cobrar um
+  // valor divergente do que o cliente aceitou.
+  const lineItemsTotal = roundMoney(order.items.reduce((sum, item) => sum + Number(item.lineTotal), 0));
   if (lineItemsTotal !== roundMoney(Number(order.total))) {
     await prisma.order.update({ where: { id: order.id }, data: { shopifySyncStatus: "FAILED" } });
     throw new NonRetryableJobError(
@@ -142,10 +143,16 @@ export async function processShopifyOrderCreateJob(payload: ShopifyOrderCreatePa
       internalOrderTag: internalOrderTag(order.id),
       note: `Pedido COD #${order.orderNumber}`,
       phone: order.codLead.phone,
+      // Sempre quantity=1 com unitPrice = lineTotal exato (nunca
+      // item.unitPrice × item.quantity — ver comentário da checagem de
+      // fidelidade acima): a quantidade comercial real vai só no título.
+      // Uniforme para UNIT_MULTIPLIER e FIXED_TOTAL, sem branch por tipo de
+      // pricing — o worker não decide preço, só formata um total já
+      // congelado como um line item Shopify válido.
       lineItems: order.items.map((item) => ({
-        title: item.titleSnapshot,
-        quantity: item.quantity,
-        unitPrice: item.unitPrice.toFixed(2),
+        title: item.quantity > 1 ? `${item.titleSnapshot} (${item.quantity}x)` : item.titleSnapshot,
+        quantity: 1,
+        unitPrice: item.lineTotal.toFixed(2),
       })),
       shippingAddress: {
         firstName: order.codLead.name,

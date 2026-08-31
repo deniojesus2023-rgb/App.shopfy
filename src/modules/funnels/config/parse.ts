@@ -1,22 +1,45 @@
+import type { z } from "zod";
+
 import { ValidationError } from "@/modules/shared/errors";
-import { funnelConfigV1Schema, type FunnelConfigV1 } from "./schema";
+import { migrateFunnelConfig } from "./migrate";
+import { funnelConfigV1Schema, funnelConfigV2Schema, type FunnelConfig } from "./schema";
+
+function parseWithSchema<T extends z.ZodType>(schema: T, config: unknown, label: string): z.infer<T> {
+  const result = schema.safeParse(config);
+  if (!result.success) {
+    throw new ValidationError(
+      `Config inválido (${label}): ${result.error.issues
+        .map((i) => `${i.path.join(".")}: ${i.message}`)
+        .join("; ")}`
+    );
+  }
+  return result.data;
+}
 
 /**
  * Ponto único de leitura do config JSON de uma FunnelVersion — nenhum
  * outro módulo deve acessar `funnelVersion.config` sem passar por aqui
  * primeiro (o JSON no banco é `Json` sem tipagem própria do Postgres).
+ *
+ * Sempre devolve o shape ATUAL (`FunnelConfig` = V2), mesmo quando a linha
+ * no banco é v1 histórica: migra em memória, nunca reescreve o banco por
+ * conta própria (isso é responsabilidade explícita de quem grava — ver
+ * `updateDraftConfig`/`publishFunnel`). Uma FunnelVersion PUBLISHED antiga
+ * nunca é tocada, mas todo código consumidor (storefront, builder,
+ * validação semântica) sempre enxerga o shape corrente.
  */
-export function parseFunnelConfig(configSchemaVersion: number, config: unknown): FunnelConfigV1 {
+export function parseFunnelConfig(configSchemaVersion: number, config: unknown): FunnelConfig {
+  if (configSchemaVersion === 2) {
+    return parseWithSchema(funnelConfigV2Schema, config, "v2");
+  }
+
   if (configSchemaVersion === 1) {
-    const result = funnelConfigV1Schema.safeParse(config);
-    if (!result.success) {
-      throw new ValidationError(
-        `Config inválido para configSchemaVersion 1: ${result.error.issues
-          .map((i) => `${i.path.join(".")}: ${i.message}`)
-          .join("; ")}`
-      );
-    }
-    return result.data;
+    const v1 = parseWithSchema(funnelConfigV1Schema, config, "v1");
+    const migrated = migrateFunnelConfig(1, 2, v1);
+    // Defesa em profundidade: a migração deve produzir V2 válido sempre —
+    // revalidar aqui pega qualquer regressão futura na função de migração
+    // antes que ela vaze para o resto da aplicação.
+    return parseWithSchema(funnelConfigV2Schema, migrated, "v1->v2 migrado");
   }
 
   throw new ValidationError(`configSchemaVersion ${configSchemaVersion} não é suportado.`);

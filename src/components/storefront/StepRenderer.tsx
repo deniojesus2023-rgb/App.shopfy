@@ -30,6 +30,8 @@ export function StepRenderer({
   state,
   theme,
   snapshot,
+  currency,
+  offerConfig,
   upsellProduct,
   hasNextStep,
   callbacks,
@@ -40,6 +42,9 @@ export function StepRenderer({
   state: RuntimeState;
   theme: FunnelTheme;
   snapshot: ResolvedProductSnapshot;
+  currency: string;
+  /** Etapa OFFER habilitada do funil (se houver) — alimenta o preço padrão mostrado no PRODUCT step. */
+  offerConfig: Extract<FunnelStep, { type: "OFFER" }>["config"] | null;
   upsellProduct: ResolvedUpsellProduct | null;
   hasNextStep: boolean;
   callbacks: StepRendererCallbacks;
@@ -50,7 +55,16 @@ export function StepRenderer({
 }) {
   switch (step.type) {
     case "PRODUCT":
-      return <ProductStepView config={step.config} snapshot={snapshot} theme={theme} onContinue={callbacks.onContinue} />;
+      return (
+        <ProductStepView
+          config={step.config}
+          snapshot={snapshot}
+          currency={currency}
+          offerConfig={offerConfig}
+          theme={theme}
+          onContinue={callbacks.onContinue}
+        />
+      );
     case "REWARD":
       return (
         <RewardStepView
@@ -68,6 +82,7 @@ export function StepRenderer({
           config={step.config}
           theme={theme}
           unitPrice={snapshot.unitPrice}
+          currency={currency}
           selectedOfferId={state.selectedOfferId}
           onSelect={callbacks.onSelectOffer}
           onContinue={callbacks.onContinue}

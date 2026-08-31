@@ -163,13 +163,14 @@ const db = {
         data,
       }: {
         where: { id: string; revision: number; status: string };
-        data: { config?: unknown; revision: { increment: number } };
+        data: { config?: unknown; configSchemaVersion?: number; revision: { increment: number } };
       }) => {
         const row = versions.find(
           (v) => v.id === where.id && v.revision === where.revision && v.status === where.status
         );
         if (!row) return { count: 0 };
         if (data.config !== undefined) row.config = data.config;
+        if (data.configSchemaVersion !== undefined) row.configSchemaVersion = data.configSchemaVersion;
         row.revision += data.revision.increment;
         return { count: 1 };
       }
@@ -441,6 +442,25 @@ describe("updateDraftConfig — optimistic concurrency", () => {
       })
     ).rejects.toThrow();
   });
+
+  it("Fase 4A: salvar um draft v1 grava configSchemaVersion=2 (canoniza no primeiro save, nunca deixa a coluna divergir do JSON)", async () => {
+    const funnel = await seedFunnelWithDraft();
+    const draft = versions[0];
+    expect(draft.configSchemaVersion).toBe(1);
+
+    await updateDraftConfig({
+      workspaceId: "ws_1",
+      funnelId: funnel.id,
+      versionId: draft.id,
+      expectedRevision: 0,
+      config: validConfigForTemplate,
+      user: fakeUser,
+    });
+
+    const stored = versions.find((v) => v.id === draft.id)!;
+    expect(stored.configSchemaVersion).toBe(2);
+    expect((stored.config as { schemaVersion: number }).schemaVersion).toBe(2);
+  });
 });
 
 describe("publishFunnel", () => {
@@ -464,6 +484,16 @@ describe("publishFunnel", () => {
     expect(updatedFunnel.status).toBe("PUBLISHED");
     expect(updatedFunnel.publishedVersionId).toBe(versions[0].id);
     expect(versions[0].status).toBe("PUBLISHED");
+  });
+
+  it("Fase 4A: publicar um draft v1 canoniza para configSchemaVersion=2 no exato momento da transição DRAFT->PUBLISHED", async () => {
+    const funnel = await seedFunnelWithDraft();
+    expect(versions[0].configSchemaVersion).toBe(1);
+
+    await publishFunnel("ws_1", funnel.id, fakeUser);
+
+    expect(versions[0].configSchemaVersion).toBe(2);
+    expect((versions[0].config as { schemaVersion: number }).schemaVersion).toBe(2);
   });
 
   it("cria um FunnelProductSnapshot imutável a partir do produto/variante atual", async () => {

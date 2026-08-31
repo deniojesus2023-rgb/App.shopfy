@@ -1,8 +1,9 @@
 import { PrimaryButton } from "../buttons";
 import { PriceDisplay } from "../PriceDisplay";
 import { ProductImage } from "../ProductImage";
-import type { ProductStepConfig } from "@/modules/funnels/config/steps";
+import type { OfferStepConfig, ProductStepConfig } from "@/modules/funnels/config/steps";
 import type { ResolvedProductSnapshot } from "@/modules/funnels/runtime/resolve";
+import { resolveOfferPrice } from "@/modules/funnels/pricing/resolve-offer-price";
 import { isSoftButtonStyle } from "../theme";
 import type { FunnelTheme } from "@/modules/funnels/config/theme";
 
@@ -24,17 +25,55 @@ function Stars({ value }: { value: number }) {
   );
 }
 
+/**
+ * Preço mostrado: por padrão o do snapshot (comportamento pré-Fase 4A).
+ * Se a etapa OFFER tem `defaultOfferId`, mostra o preço RESOLVIDO daquela
+ * oferta (spec item 17) — nunca decide isto por posição no array. Nunca
+ * pré-seleciona nada na etapa OFFER em si; é só o preço exibido aqui.
+ */
+function resolveDisplayPrice(
+  snapshot: ResolvedProductSnapshot,
+  showCompareAtPrice: boolean,
+  offerConfig: OfferStepConfig | null
+): { price: number; compareAtPrice: number | null | undefined } {
+  const defaultOffer = offerConfig?.defaultOfferId
+    ? offerConfig.offers.find((o) => o.id === offerConfig.defaultOfferId)
+    : undefined;
+
+  if (!defaultOffer) {
+    return { price: snapshot.unitPrice, compareAtPrice: showCompareAtPrice ? snapshot.compareAtPrice : undefined };
+  }
+
+  const resolved = resolveOfferPrice(snapshot.unitPrice, defaultOffer);
+  if (resolved.quantity === 1) {
+    return { price: resolved.total, compareAtPrice: showCompareAtPrice ? snapshot.compareAtPrice : undefined };
+  }
+  // Bundle de mais de 1 unidade: o "de/por" compara com a referência do
+  // PACOTE (unitPrice × quantity), não com o preço unitário do produto —
+  // comparar um total de 3 unidades com o preço de 1 seria enganoso.
+  return {
+    price: resolved.total,
+    compareAtPrice: showCompareAtPrice && resolved.discount > 0 ? resolved.referenceSubtotal : undefined,
+  };
+}
+
 export function ProductStepView({
   config,
   snapshot,
+  currency,
+  offerConfig,
   theme,
   onContinue,
 }: {
   config: ProductStepConfig;
   snapshot: ResolvedProductSnapshot;
+  currency: string;
+  offerConfig: OfferStepConfig | null;
   theme: FunnelTheme;
   onContinue: () => void;
 }) {
+  const display = resolveDisplayPrice(snapshot, config.showCompareAtPrice, offerConfig);
+
   return (
     <div className="flex flex-col gap-5 px-5 py-6">
       <ProductImage src={snapshot.featuredImageUrl} alt={snapshot.title} size="large" />
@@ -55,11 +94,7 @@ export function ProductStepView({
       )}
 
       <div className="flex justify-center">
-        <PriceDisplay
-          price={snapshot.unitPrice}
-          compareAtPrice={config.showCompareAtPrice ? snapshot.compareAtPrice : undefined}
-          size="lg"
-        />
+        <PriceDisplay price={display.price} compareAtPrice={display.compareAtPrice} currency={currency} size="lg" />
       </div>
 
       {config.showBenefits && config.benefits.length > 0 && (

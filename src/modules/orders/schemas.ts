@@ -10,8 +10,10 @@ export const submitCheckoutSchema = z.object({
   funnelPublicId: z.string().min(1).max(64),
   funnelVersionId: z.string().cuid(),
   checkoutAttemptId: z.string().uuid(),
+  // Só a identidade da oferta — nunca a quantidade (Fase 4A item 19/20): o
+  // servidor deriva `quantity` da oferta publicada correspondente,
+  // ignorando qualquer valor que o client pudesse enviar.
   selectedOfferId: z.string().max(64).optional(),
-  selectedQuantity: z.number().int().min(1).max(20).optional(),
   selectedPaymentMethod: z.enum(["COD", "ONLINE"]),
   customer: z.object({
     name: customerFieldSchema.optional(),

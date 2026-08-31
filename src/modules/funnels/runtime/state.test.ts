@@ -21,7 +21,11 @@ function step(overrides: Partial<{ id: string; type: FunnelStep["type"]; enabled
         config: { showRating: false, showBenefits: false, benefits: [], showCompareAtPrice: false, ctaText: "x" },
       };
     case "OFFER":
-      return { ...base, type: "OFFER", config: { offers: [{ id: "o1", quantity: 1, label: "1x" }] } };
+      return {
+        ...base,
+        type: "OFFER",
+        config: { offers: [{ id: "o1", quantity: 1, label: "1x", pricing: { type: "UNIT_MULTIPLIER" } }] },
+      };
     default:
       return {
         ...base,

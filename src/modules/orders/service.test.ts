@@ -202,7 +202,12 @@ function offerStep() {
     type: "OFFER" as const,
     enabled: true,
     order: 4,
-    config: { offers: [{ id: "o1", quantity: 1, label: "1x" }, { id: "o2", quantity: 3, label: "3x" }] },
+    config: {
+      offers: [
+        { id: "o1", quantity: 1, label: "1x", pricing: { type: "UNIT_MULTIPLIER" as const } },
+        { id: "o2", quantity: 3, label: "3x", pricing: { type: "UNIT_MULTIPLIER" as const } },
+      ],
+    },
   };
 }
 
@@ -328,10 +333,14 @@ describe("submitCheckout — autoridade do servidor", () => {
     await expect(submitCheckout(baseInput({ selectedOfferId: "does-not-exist" }))).rejects.toThrow();
   });
 
-  it("ignora selectedQuantity do client — quantidade vem sempre da oferta configurada no servidor", async () => {
+  it("ignora quantidade manipulada do client — quantidade vem sempre da oferta configurada no servidor", async () => {
     seedPublishedFunnel({ steps: [productStep(), successStep(), paymentStep(), codFormStep(), offerStep()] });
+    // `selectedQuantity` nem existe mais no schema público (Fase 4A item
+    // 19/20) — simula aqui um payload bruto que ainda tentasse mandar um
+    // campo extra (bypass de tipo), provando que `submitCheckout` nunca lê
+    // nada além de `selectedOfferId` para decidir quantidade.
     const result = await submitCheckout(
-      baseInput({ selectedOfferId: "o2", selectedQuantity: 999 as never })
+      baseInput({ selectedOfferId: "o2", ...({ selectedQuantity: 999 } as object) })
     );
     // Oferta o2 tem quantity=3 real — 999 do client nunca é usado.
     expect(Number(result.total)).toBe(300);

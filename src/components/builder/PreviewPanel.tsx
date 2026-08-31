@@ -14,12 +14,14 @@ export function PreviewPanel({
   dispatch,
   funnelMeta,
   snapshot,
+  currency,
   upsellProduct,
 }: {
   state: BuilderState;
   dispatch: (action: BuilderAction) => void;
   funnelMeta: { id: string; name: string; slug: string; publicId: string; versionId: string };
   snapshot: ResolvedFunnel["snapshot"];
+  currency: string;
   upsellProduct: UpsellProductRef | null;
 }) {
   const enabledSteps = getEnabledSteps(state.draftConfig.steps);
@@ -38,6 +40,7 @@ export function PreviewPanel({
     version: { id: funnelMeta.versionId, versionNumber: 0 },
     config: state.draftConfig,
     snapshot,
+    currency,
     upsellProduct: upsellProduct ? { title: upsellProduct.title, featuredImageUrl: upsellProduct.featuredImageUrl } : null,
     isPreview: true,
   };

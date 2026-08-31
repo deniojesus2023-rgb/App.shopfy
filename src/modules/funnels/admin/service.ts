@@ -37,7 +37,7 @@ export async function getFunnelForWorkspace(workspaceId: string, funnelId: strin
   const funnel = await prisma.funnel.findFirst({
     where: { id: funnelId, workspaceId },
     include: {
-      shopifyStore: { select: { id: true, shopDomain: true, displayName: true } },
+      shopifyStore: { select: { id: true, shopDomain: true, displayName: true, currency: true } },
       publishedVersion: true,
       products: { include: { product: { select: { id: true, title: true, featuredImageUrl: true } } } },
       versions: { orderBy: { versionNumber: "desc" } },
@@ -258,15 +258,25 @@ export async function updateDraftConfig(input: UpdateDraftConfigInput) {
   }
 
   // Valida estruturalmente antes de gravar — nunca persiste config inválido.
+  // `parseFunnelConfig` sempre devolve o shape ATUAL (migra v1->v2 em
+  // memória quando necessário) — todo save de draft grava esse shape e a
+  // `configSchemaVersion` corrente junto (nunca deixa a coluna dizer "1"
+  // enquanto o JSON já é v2; ver comentário em config/parse.ts). Isto só
+  // vale para DRAFT — uma FunnelVersion PUBLISHED nunca passa por aqui
+  // (guard `status !== "DRAFT"` acima).
   const parsed = parseFunnelConfig(version.configSchemaVersion, input.config);
 
   const result = await prisma.funnelVersion.updateMany({
     where: { id: version.id, revision: input.expectedRevision, status: "DRAFT" },
-    // FunnelConfigV1 é estruturalmente JSON puro (garantido pelo Zod), mas
+    // FunnelConfig é estruturalmente JSON puro (garantido pelo Zod), mas
     // seus literais/union types não satisfazem o índice `InputJsonObject`
     // do Prisma — o cast é seguro porque `parsed` só existe se passou pelo
     // parseFunnelConfig acima.
-    data: { config: parsed as object, revision: { increment: 1 } },
+    data: {
+      config: parsed as object,
+      configSchemaVersion: CURRENT_FUNNEL_CONFIG_SCHEMA_VERSION,
+      revision: { increment: 1 },
+    },
   });
 
   if (result.count === 0) {
@@ -345,7 +355,18 @@ export async function publishFunnel(workspaceId: string, funnelId: string, user:
 
     const publishedVersion = await tx.funnelVersion.update({
       where: { id: draft.id },
-      data: { status: "PUBLISHED", publishedAt: new Date() },
+      // Canoniza para o schema atual no exato momento em que este DRAFT
+      // vira a nova versão imutável — isto não é "modificar uma versão
+      // PUBLISHED histórica" (a linha ainda é um DRAFT até este update
+      // dentro da mesma transação), é a única oportunidade de fazer o
+      // storage bater com o `parsedConfig` já validado acima sem depender
+      // de o lojista ter salvo o draft manualmente antes de publicar.
+      data: {
+        status: "PUBLISHED",
+        publishedAt: new Date(),
+        config: parsedConfig as object,
+        configSchemaVersion: CURRENT_FUNNEL_CONFIG_SCHEMA_VERSION,
+      },
     });
 
     // Snapshot imutável do produto no momento da publicação — o storefront

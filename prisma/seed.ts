@@ -4,7 +4,7 @@ import { PROGRESS_REWARD_COD_TEMPLATE } from "../src/modules/funnels/config/seed
 
 const prisma = new PrismaClient();
 
-// FunnelConfigV1 é JSON puro (garantido pelo Zod em seed-templates.ts), mas
+// FunnelConfig é JSON puro (garantido pelo Zod em seed-templates.ts), mas
 // seus literais/union types não satisfazem o índice `InputJsonObject` do
 // Prisma — mesmo cast usado em modules/funnels/service.ts.
 const templateData = {

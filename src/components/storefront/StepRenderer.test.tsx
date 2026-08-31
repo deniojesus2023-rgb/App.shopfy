@@ -52,6 +52,8 @@ function renderStep(step: FunnelStep) {
       state={baseState}
       theme={theme}
       snapshot={snapshot}
+      currency="COP"
+      offerConfig={null}
       upsellProduct={null}
       hasNextStep={false}
       callbacks={noopCallbacks}
@@ -99,8 +101,8 @@ describe("StepRenderer — despacha os 7 tipos de etapa", () => {
       order: 0,
       config: {
         offers: [
-          { id: "o1", quantity: 1, label: "1 unidade" },
-          { id: "o2", quantity: 2, label: "2 unidades" },
+          { id: "o1", quantity: 1, label: "1 unidade", pricing: { type: "UNIT_MULTIPLIER" } },
+          { id: "o2", quantity: 2, label: "2 unidades", pricing: { type: "UNIT_MULTIPLIER" } },
         ],
       },
     });

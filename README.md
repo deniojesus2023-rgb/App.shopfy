@@ -6,8 +6,9 @@ RBAC, auditoria), a **Fase 1A** (conexão de loja Shopify via OAuth + webhooks),
 a **Fase 1B** (fila persistente + importação/sincronização de catálogo), a
 **Fase 2A** (motor de configuração de funis: draft/versão/publicação), a
 **Fase 2B** (storefront público + runtime de funil em `/f/[publicId]/[slug]`),
-a **Fase 2C** (Funnel Builder MVP — editor visual) e a **Fase 3** (COD Engine
-+ Order Engine + criação de pedido na Shopify — ver seção própria abaixo).
+a **Fase 2C** (Funnel Builder MVP — editor visual), a **Fase 3** (COD Engine
++ Order Engine + criação de pedido na Shopify) e a **Fase 4A** (Pricing &
+Offer Engine — preço fixo por oferta, ver seção própria abaixo).
 Pagamento online real, fornecedores/dropshipping, gamificação real, WhatsApp,
 recuperação de carrinho, domínio próprio, antifraude sofisticado e order
 editing de upsell ainda não foram implementados.
@@ -462,6 +463,91 @@ temporária da Shopify nunca faz o cliente perder o pedido.
   `UPSELL` no fluxo `SUCCESS → UPSELL` — esta fase não edita o Order real
   a partir da decisão de upsell (fase própria futura).
 
+## Pricing & Offer Engine (Fase 4A)
+
+Remove a dependência de `unitPrice × quantity` como única forma de
+precificar uma oferta — cada `OFFER` do funil agora carrega sua própria
+regra comercial (`PricingRule`), validada no servidor, congelada com a
+versão publicada e usada de ponta a ponta (Builder, storefront,
+`calculateOrderQuote`, criação de pedido na Shopify).
+
+- **Três conceitos separados, nunca confundidos**: preço de **catálogo**
+  (`ProductVariant.price`, sincronizado da Shopify — nunca sobrescrito),
+  preço de **oferta do funil** (`PricingRule`, publicado no config), e
+  **quote do pedido** (`calculateOrderQuote`, calculado pelo servidor no
+  momento da compra a partir dos dois anteriores). Editar uma oferta nunca
+  reescreve o catálogo; recomprar uma versão antiga nunca recalcula com o
+  preço atual do Product — sempre o `FunnelProductSnapshot` congelado
+  daquela versão.
+- **`PricingRule`** (`modules/funnels/config/pricing-rule.ts`), união
+  discriminada extensível — só dois tipos implementados nesta fase:
+  `UNIT_MULTIPLIER` (`unitPrice × quantity`, o comportamento histórico) e
+  `FIXED_TOTAL` (o lojista define o total do pacote; pode ser maior que a
+  referência — sobretaxa permitida, só avisada no Builder, nunca
+  bloqueada). Nada de tier pricing genérico, Buy X Get Y, cupons ou
+  fórmulas customizadas ainda.
+- **`FunnelConfigV2`**: `pricing` passa a ser obrigatório em cada offer —
+  mudança estrutural, não aditiva, então usa de verdade a infraestrutura
+  de migração criada (e nunca chamada) na Fase 2A. `migrateFunnelConfig`
+  ganhou sua primeira migração real (`1 -> 2`): toda oferta v1 sem
+  `pricing` vira `UNIT_MULTIPLIER` (comportamento idêntico ao que já
+  tinha). `parseFunnelConfig` sempre devolve o shape ATUAL — parseia com
+  o schema histórico, migra em memória, revalida com o schema atual — e é
+  o único lugar que sabe disso; todo o resto do app (`FunnelConfig` =
+  alias de `FunnelConfigV2`) só enxerga o shape corrente.
+- **Nenhuma `FunnelVersion` `PUBLISHED` histórica é reescrita**: uma
+  versão publicada antes desta fase continua com `configSchemaVersion=1`
+  e o JSON original no banco para sempre — toda leitura migra em memória.
+  Só dois pontos gravam v2 de propósito: `updateDraftConfig` (todo save
+  de draft canoniza — corrigido um bug real encontrado ao implementar
+  isto: a coluna `configSchemaVersion` não acompanhava o JSON já migrado)
+  e `publishFunnel` (a transição DRAFT→PUBLISHED canoniza o config no
+  exato momento em que a versão nasce — não é "mutar uma PUBLISHED
+  histórica", é o próprio nascimento dela).
+- **Núcleo de pricing compartilhado, nunca duplicado**: `resolveOfferPrice`
+  (`modules/funnels/pricing/resolve-offer-price.ts`) é puro, sem I/O, e é
+  a MESMA função usada pelo preview do Builder (economia mostrada ao
+  lojista), pelo storefront (`OFFER`/`PRODUCT` steps) e por
+  `calculateOrderQuote` no servidor — elimina a duplicação que já existia
+  antes desta fase (`runtime/pricing.ts` tinha sua própria
+  `computeOfferPrice`/`formatPrice` paralela; removido). O servidor
+  continua sendo a única autoridade sobre o que é cobrado.
+- **`calculateOrderQuote` nunca recebe `quantity` do client** — só
+  `selectedOfferId`; a quantidade e a regra de preço vêm sempre da oferta
+  publicada correspondente. `selectedQuantity` foi removido do schema
+  público (`POST /api/storefront/orders`) — não é mais nem aceito.
+  `OrderItem.unitPrice` é o preço unitário EFETIVO (`total/quantity`,
+  arredondado — informativo), nunca usado para reconstituir o total; isso
+  é sempre `OrderItem.lineTotal`, exato, sem divisão.
+- **Mapeamento para a Shopify simplificado**: todo line item vai sempre
+  como `quantity: 1` com `unitPrice = lineTotal` exato — a quantidade
+  comercial real só entra no título (`"Produto X (3x)"`). Uniforme para
+  `UNIT_MULTIPLIER` e `FIXED_TOTAL`, sem branch por tipo de pricing no
+  worker — resolve de vez o problema de um `FIXED_TOTAL` não divisível em
+  centavos exatos por `quantity` (149.900 ÷ 3 não fecha exato) sem
+  precisar de um algoritmo de distribuição de centavos. A checagem de
+  fidelidade do worker (Fase 3) foi corrigida para comparar
+  `Σ lineTotal === Order.total` (nunca `Σ unitPrice × quantity`, que
+  ficaria instável com desconto).
+- **Money**: reaproveita a estratégia da Fase 3 (`Decimal(12,2)`,
+  `roundMoney`) sem criar segunda implementação — adiciona só
+  `multiplyMoney`/`compareMoney` e `formatMoneyForDisplay(value, currency)`
+  para EXIBIÇÃO (não assume 2 casas para toda moeda: CLP mostra 0 casas,
+  por exemplo). O wire format para a Shopify e o storage continuam fixos
+  em 2 casas — decisão da Fase 3 mantida (a Shopify exige isso mesmo para
+  moeda zero-decimal).
+- **Oferta predeterminada** (`defaultOfferId`): alimenta só o preço
+  mostrado no `PRODUCT step` antes do visitante chegar em `OFFER` — nunca
+  pré-seleciona nada na etapa `OFFER` em si nem dispensa escolha explícita
+  na submissão. Um bundle de mais de 1 unidade compara com a referência do
+  PACOTE, nunca com o preço unitário do produto.
+- **Builder**: `OfferStepEditor` ganhou toggle "Precio automático"/"Precio
+  fijo", mostrando ao vivo Precio de referencia / Precio de oferta /
+  Ahorras (derivados, nunca escritos pelo lojista), aviso não-bloqueante
+  quando o preço fixo é maior que a referência, e um seletor de oferta
+  predeterminada. Moeda vem sempre de `ShopifyStore.currency` — nunca
+  escolhida à mão.
+
 ## Testes
 
 ```bash
@@ -547,3 +633,39 @@ isolamento de tenant do admin de pedidos, `enqueueJobInTx` aceitando um
 `tx` de transação (não só o `prisma` singleton), `redactOrderFields`
 (allowlist, PII nunca escapa) e RBAC `orders:view`/`orders:manage`. Toda
 chamada à Shopify é sempre mockada — nenhum teste cria pedido real.
+
+Da Fase 4A: `resolveOfferPrice` (UNIT_MULTIPLIER sem desconto, FIXED_TOTAL
+com desconto/igual/sobretaxa derivados matematicamente, nunca escritos à
+mão) e `savingsPercent` (null quando não há desconto real); `pricingRuleSchema`
+(amount ausente/zero/negativo/NaN/Infinity/float impreciso/acima do teto
+rejeitados); `migrateFunnelConfig` V1→V2 (injeta `pricing: UNIT_MULTIPLIER`
+em toda oferta antiga, preserva os demais campos e etapas não-OFFER
+intocadas, rejeita downgrade, erro em migração não registrada);
+`parseFunnelConfig` sempre retornando o schema atual (V2) — direto quando
+`configSchemaVersion=2`, via migração + revalidação quando `=1`; `calculateOrderQuote`
+com a nova assinatura (`productSnapshot`/`offer`/`currency`, sem
+`quantity` do client), incluindo o caso FIXED_TOTAL não divisível
+igualmente pela quantidade; `submitCheckout` ignorando `selectedQuantity`
+manipulado no payload bruto (o campo não existe mais no schema/tipo) e
+derivando a quantidade sempre da oferta resolvida no servidor; o job
+`SHOPIFY_ORDER_CREATE` enviando sempre `quantity: 1` com `unitPrice
+= lineTotal` exato (título carrega a quantidade comercial, ex. `"Produto X
+(2x)"`) e a checagem de fidelidade por `Σ lineTotal` (não mais `unitPrice ×
+quantity`); `OfferStepEditor` (alternância Preço automático/fixo, seed do
+campo fixo com a referência ao trocar de tipo, exibição de referência/oferta/economia
+só quando há desconto real, aviso não-bloqueante quando o preço fixo supera
+a referência, seleção de `defaultOfferId` restrita a ofertas existentes);
+`ProductStepView`/`OfferStepView` (preço/`compareAtPrice` sempre via
+`resolveOfferPrice`, nunca calculado inline; bundle com `defaultOfferId`
+comparado contra a referência do próprio pacote, nunca contra o
+`compareAtPrice` de 1 unidade do snapshot; comportamento sem `OFFER`/sem
+`defaultOfferId` preservado idêntico ao pré-Fase 4A); `formatMoneyForDisplay`/
+`multiplyMoney`/`compareMoney` (moedas de 2 casas, CLP/zero-decimal,
+moeda desconhecida com fallback seguro, case-insensitive) — a codificação
+para a Shopify e a coluna no banco continuam fixas em 2 casas decimais,
+como já decidido na Fase 3; e, no `admin/service.ts`, a canonização de
+`configSchemaVersion` para a versão atual tanto ao salvar um draft V1
+(`updateDraftConfig`) quanto ao publicá-lo (`publishFunnel`) — corrigindo um
+bug latente em que o JSON migrava para V2 mas a coluna de versão ficava
+parada em 1. Nenhuma versão publicada histórica é reescrita: só a
+transição DRAFT→PUBLISHED e o salvamento de draft canonizam a linha.

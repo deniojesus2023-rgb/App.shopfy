@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { funnelConfigV1Schema } from "./schema";
+import { funnelConfigV1Schema, funnelConfigV2Schema } from "./schema";
 import { parseFunnelConfig } from "./parse";
 import { PROGRESS_REWARD_COD_TEMPLATE } from "./seed-templates";
 
@@ -18,11 +18,13 @@ function baseConfig(steps: unknown[]) {
   return { schemaVersion: 1, theme: validTheme, steps, settings: {} };
 }
 
-describe("funnelConfigV1Schema — estrutura geral", () => {
-  it("aceita o template seed válido", () => {
-    expect(funnelConfigV1Schema.safeParse(PROGRESS_REWARD_COD_TEMPLATE.defaultConfig).success).toBe(true);
+describe("funnelConfigV2Schema — template atual", () => {
+  it("aceita o template seed válido (V2, com pricing em cada oferta)", () => {
+    expect(funnelConfigV2Schema.safeParse(PROGRESS_REWARD_COD_TEMPLATE.defaultConfig).success).toBe(true);
   });
+});
 
+describe("funnelConfigV1Schema — estrutura geral (legado)", () => {
   it("rejeita schemaVersion diferente de 1", () => {
     const config = { ...baseConfig([]), schemaVersion: 2 };
     expect(funnelConfigV1Schema.safeParse(config).success).toBe(false);
@@ -228,11 +230,39 @@ describe("discriminated union de steps", () => {
   });
 });
 
+const legacyV1Config = {
+  schemaVersion: 1,
+  theme: validTheme,
+  settings: {},
+  steps: [
+    successStep("s", 0),
+    {
+      id: "o",
+      type: "OFFER",
+      enabled: true,
+      order: 1,
+      // Shape v1 de verdade: sem `pricing` — é exatamente o que uma
+      // FunnelVersion PUBLISHED antes da Fase 4A tem gravado no banco.
+      config: { offers: [{ id: "qty-1", quantity: 1, label: "1x" }] },
+    },
+  ],
+};
+
 describe("parseFunnelConfig", () => {
-  it("retorna o config tipado para configSchemaVersion 1", () => {
-    const result = parseFunnelConfig(1, PROGRESS_REWARD_COD_TEMPLATE.defaultConfig);
-    expect(result.schemaVersion).toBe(1);
+  it("retorna o config tipado para configSchemaVersion 2 (atual)", () => {
+    const result = parseFunnelConfig(2, PROGRESS_REWARD_COD_TEMPLATE.defaultConfig);
+    expect(result.schemaVersion).toBe(2);
     expect(result.steps.length).toBeGreaterThan(0);
+  });
+
+  it("migra configSchemaVersion 1 para o shape atual (V2) em memória", () => {
+    const result = parseFunnelConfig(1, legacyV1Config);
+    expect(result.schemaVersion).toBe(2);
+    const offerStep = result.steps.find((s) => s.type === "OFFER");
+    expect(offerStep?.type).toBe("OFFER");
+    if (offerStep?.type === "OFFER") {
+      expect(offerStep.config.offers[0].pricing).toEqual({ type: "UNIT_MULTIPLIER" });
+    }
   });
 
   it("lança ValidationError para configSchemaVersion não suportado", () => {
@@ -241,5 +271,9 @@ describe("parseFunnelConfig", () => {
 
   it("lança ValidationError para config estruturalmente inválido", () => {
     expect(() => parseFunnelConfig(1, { schemaVersion: 1 })).toThrow();
+  });
+
+  it("lança ValidationError para config v2 estruturalmente inválido", () => {
+    expect(() => parseFunnelConfig(2, { schemaVersion: 2 })).toThrow();
   });
 });

@@ -1,4 +1,4 @@
-import type { FunnelConfigV1 } from "./schema";
+import type { FunnelConfig } from "./schema";
 import type { FunnelStep } from "./steps";
 
 export interface SemanticValidationError {
@@ -31,7 +31,7 @@ function enabledStepsOfType<T extends FunnelStep["type"]>(steps: FunnelStep[], t
  * decidir o que fazer (bloquear publicação, mostrar na UI, etc).
  */
 export function validateFunnelSemantics(
-  config: FunnelConfigV1,
+  config: FunnelConfig,
   context: SemanticValidationContext
 ): SemanticValidationError[] {
   const errors: SemanticValidationError[] = [];

@@ -7,7 +7,7 @@ import { logAudit } from "@/modules/audit/service";
 import { enqueueJobInTx } from "@/modules/queue/service";
 import { NotFoundError, ValidationError } from "@/modules/shared/errors";
 import { parseFunnelConfig } from "../funnels/config/parse";
-import type { CodFormStepConfig } from "../funnels/config/steps";
+import type { CodFormStepConfig, OfferItem } from "../funnels/config/steps";
 import { calculateOrderQuote } from "./pricing";
 import { normalizePhone, normalizeText } from "./normalize";
 import { generateOrderPublicId } from "./public-id";
@@ -83,17 +83,21 @@ export async function submitCheckout(input: SubmitCheckoutInput): Promise<Submit
 
   const leadData = buildCodLeadData(codFormStep.config, input.customer);
 
-  // Quantidade: se o funil tem uma etapa OFFER habilitada, a oferta
-  // escolhida precisa bater exatamente com uma configurada (nunca aceitar
-  // uma quantidade arbitrária do client); sem OFFER, é sempre 1 unidade.
+  // A oferta (quantidade + regra de preço) vem sempre do config PUBLICADO,
+  // nunca do client — `selectedOfferId` só aponta qual delas, o resto
+  // (quantity, pricing) é resolvido aqui. Sem etapa OFFER habilitada, é
+  // sempre uma "oferta sintética" de 1 unidade ao preço do snapshot —
+  // preserva o comportamento anterior à Fase 4A para funis sem OFFER.
   const offerStep = config.steps.find((s) => s.type === "OFFER" && s.enabled);
-  let quantity = 1;
+  let offer: OfferItem;
   if (offerStep && offerStep.type === "OFFER") {
-    const offer = offerStep.config.offers.find((o) => o.id === input.selectedOfferId);
-    if (!offer) {
+    const found = offerStep.config.offers.find((o) => o.id === input.selectedOfferId);
+    if (!found) {
       throw new ValidationError("Oferta inválida.");
     }
-    quantity = offer.quantity;
+    offer = found;
+  } else {
+    offer = { id: "__default__", quantity: 1, label: "", pricing: { type: "UNIT_MULTIPLIER" } };
   }
 
   const shopifyStore = await prisma.shopifyStore.findUnique({
@@ -102,10 +106,9 @@ export async function submitCheckout(input: SubmitCheckoutInput): Promise<Submit
   });
 
   const quote = calculateOrderQuote({
-    unitPrice: version.productSnapshot.unitPrice.toNumber(),
-    quantity,
+    productSnapshot: { unitPrice: version.productSnapshot.unitPrice.toNumber(), title: version.productSnapshot.title },
+    offer,
     currency: shopifyStore?.currency ?? "COP",
-    titleSnapshot: version.productSnapshot.title,
   });
 
   const idempotencyKey = `${funnel.id}:${input.checkoutAttemptId}`;

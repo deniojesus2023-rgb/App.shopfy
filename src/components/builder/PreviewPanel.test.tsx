@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 
 import { createBuilderState } from "./builder-state";
 import { PreviewPanel } from "./PreviewPanel";
-import type { FunnelConfigV1 } from "@/modules/funnels/config/schema";
+import type { FunnelConfig } from "@/modules/funnels/config/schema";
 
 const theme = {
   primaryColor: "#111827",
@@ -17,8 +17,8 @@ const theme = {
   buttonStyle: "SOLID" as const,
 };
 
-const config: FunnelConfigV1 = {
-  schemaVersion: 1,
+const config: FunnelConfig = {
+  schemaVersion: 2,
   theme,
   settings: {},
   steps: [
@@ -50,6 +50,7 @@ describe("PreviewPanel", () => {
         dispatch={() => {}}
         funnelMeta={{ id: "f1", name: "Funil", slug: "funil", publicId: "pub1", versionId: "v1" }}
         snapshot={snapshot}
+        currency="COP"
         upsellProduct={null}
       />
     );
@@ -66,6 +67,7 @@ describe("PreviewPanel", () => {
         dispatch={() => {}}
         funnelMeta={{ id: "f1", name: "Funil", slug: "funil", publicId: "pub1", versionId: "v1" }}
         snapshot={snapshot}
+        currency="COP"
         upsellProduct={null}
       />
     );

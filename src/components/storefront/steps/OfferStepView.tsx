@@ -5,12 +5,13 @@ import { PriceDisplay } from "../PriceDisplay";
 import { isSoftButtonStyle } from "../theme";
 import type { OfferStepConfig } from "@/modules/funnels/config/steps";
 import type { FunnelTheme } from "@/modules/funnels/config/theme";
-import { computeOfferPrice } from "@/modules/funnels/runtime/pricing";
+import { resolveOfferPrice } from "@/modules/funnels/pricing/resolve-offer-price";
 
 export function OfferStepView({
   config,
   theme,
   unitPrice,
+  currency,
   selectedOfferId,
   onSelect,
   onContinue,
@@ -18,6 +19,7 @@ export function OfferStepView({
   config: OfferStepConfig;
   theme: FunnelTheme;
   unitPrice: number;
+  currency: string;
   selectedOfferId: string | null;
   onSelect: (offerId: string, quantity: number) => void;
   onContinue: () => void;
@@ -28,7 +30,10 @@ export function OfferStepView({
         <legend className="sr-only">Escolha a quantidade</legend>
         {config.offers.map((offer) => {
           const selected = offer.id === selectedOfferId;
-          const price = computeOfferPrice(unitPrice, offer.quantity);
+          const resolved = resolveOfferPrice(unitPrice, offer);
+          // Preço "de/por" só quando há desconto real (nunca sobretaxa, e
+          // nunca a economia escrita pelo lojista — sempre derivada aqui).
+          const compareAtPrice = resolved.discount > 0 ? resolved.referenceSubtotal : null;
           return (
             <label key={offer.id} className="block cursor-pointer">
               <input
@@ -49,7 +54,7 @@ export function OfferStepView({
                     {offer.badge && <Badge>{offer.badge}</Badge>}
                   </div>
                 </div>
-                <PriceDisplay price={price} />
+                <PriceDisplay price={resolved.total} compareAtPrice={compareAtPrice} currency={currency} />
               </StorefrontCard>
             </label>
           );

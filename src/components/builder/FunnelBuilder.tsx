@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useReducer, useState } from "react";
 
 import { publishFunnelAction, updateDraftConfigAction } from "@/modules/funnels/admin/actions";
-import type { FunnelConfigV1 } from "@/modules/funnels/config/schema";
+import type { FunnelConfig } from "@/modules/funnels/config/schema";
 import { validateFunnelSemantics } from "@/modules/funnels/config/semantic-validation";
 import type { ResolvedProductSnapshot } from "@/modules/funnels/runtime/resolve";
 import { BuilderHeader } from "./BuilderHeader";
@@ -19,9 +19,11 @@ import { StepSidebar } from "./StepSidebar";
 export interface FunnelBuilderProps {
   workspaceSlug: string;
   funnel: { id: string; name: string; slug: string; publicId: string; shopifyStoreId: string };
-  version: { id: string; config: FunnelConfigV1; revision: number };
+  version: { id: string; config: FunnelConfig; revision: number };
   primaryProductId: string;
   snapshot: ResolvedProductSnapshot;
+  /** Moeda da ShopifyStore do funil (Fase 4A) — o Builder nunca deixa o lojista escolher outra. */
+  currency: string;
   initialUpsellProduct: UpsellProductRef | null;
   canEdit: boolean;
   canPublish: boolean;
@@ -33,6 +35,7 @@ export function FunnelBuilder({
   version,
   primaryProductId,
   snapshot,
+  currency,
   initialUpsellProduct,
   canEdit,
   canPublish,
@@ -131,6 +134,7 @@ export function FunnelBuilder({
     dispatch,
     funnelMeta: { id: funnel.id, name: funnel.name, slug: funnel.slug, publicId: funnel.publicId, versionId: version.id },
     snapshot,
+    currency,
     upsellProduct,
   };
 
@@ -141,6 +145,7 @@ export function FunnelBuilder({
     funnelId: funnel.id,
     shopifyStoreId: funnel.shopifyStoreId,
     unitPrice: snapshot.unitPrice,
+    currency,
     upsellProduct,
     onUpsellProductChange: setUpsellProduct,
   };

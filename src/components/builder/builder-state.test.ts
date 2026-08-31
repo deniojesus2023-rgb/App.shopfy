@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { builderReducer, createBuilderState } from "./builder-state";
-import type { FunnelConfigV1 } from "@/modules/funnels/config/schema";
+import type { FunnelConfig } from "@/modules/funnels/config/schema";
 
 const theme = {
   primaryColor: "#111827",
@@ -45,12 +45,12 @@ function offerStep(overrides: Partial<{ id: string; order: number; enabled: bool
     type: "OFFER" as const,
     enabled: overrides.enabled ?? true,
     order: overrides.order ?? 2,
-    config: { offers: [{ id: "o1", quantity: 1, label: "Unidade" }] },
+    config: { offers: [{ id: "o1", quantity: 1, label: "Unidade", pricing: { type: "UNIT_MULTIPLIER" as const } }] },
   };
 }
 
-function config(steps: FunnelConfigV1["steps"]): FunnelConfigV1 {
-  return { schemaVersion: 1, theme, steps, settings: {} };
+function config(steps: FunnelConfig["steps"]): FunnelConfig {
+  return { schemaVersion: 2, theme, steps, settings: {} };
 }
 
 describe("createBuilderState", () => {

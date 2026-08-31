@@ -1,4 +1,4 @@
-import type { FunnelConfigV1 } from "@/modules/funnels/config/schema";
+import type { FunnelConfig } from "@/modules/funnels/config/schema";
 import type { FunnelStep, FunnelStepType } from "@/modules/funnels/config/steps";
 import type { FunnelTheme } from "@/modules/funnels/config/theme";
 
@@ -6,9 +6,9 @@ export type SelectedPanel = { kind: "step"; stepId: string } | { kind: "theme" }
 
 export interface BuilderState {
   /** Último config confirmado pelo servidor (revision correspondente). */
-  originalConfig: FunnelConfigV1;
+  originalConfig: FunnelConfig;
   /** Cópia de trabalho — tudo que o usuário está editando agora. */
-  draftConfig: FunnelConfigV1;
+  draftConfig: FunnelConfig;
   revision: number;
   selected: SelectedPanel;
   dirty: boolean;
@@ -30,9 +30,9 @@ export type BuilderAction =
   | { type: "SAVE_ERROR"; message: string }
   | { type: "SAVE_CONFLICT" }
   | { type: "DISMISS_CONFLICT" }
-  | { type: "RELOAD_FROM_SERVER"; config: FunnelConfigV1; revision: number };
+  | { type: "RELOAD_FROM_SERVER"; config: FunnelConfig; revision: number };
 
-export function createBuilderState(config: FunnelConfigV1, revision: number): BuilderState {
+export function createBuilderState(config: FunnelConfig, revision: number): BuilderState {
   const firstStep = [...config.steps].sort((a, b) => a.order - b.order)[0];
   return {
     originalConfig: config,
@@ -55,7 +55,7 @@ function renumberOrders(steps: FunnelStep[]): FunnelStep[] {
   return steps.map((step, index) => ({ ...step, order: index }) as FunnelStep);
 }
 
-function updateSteps(config: FunnelConfigV1, updater: (steps: FunnelStep[]) => FunnelStep[]): FunnelConfigV1 {
+function updateSteps(config: FunnelConfig, updater: (steps: FunnelStep[]) => FunnelStep[]): FunnelConfig {
   return { ...config, steps: updater(config.steps) };
 }
 

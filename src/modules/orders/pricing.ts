@@ -1,18 +1,24 @@
 import { roundMoney } from "@/modules/shared/money";
+import { resolveOfferPrice } from "@/modules/funnels/pricing/resolve-offer-price";
+import type { OfferItem } from "@/modules/funnels/config/steps";
 
 /**
- * Único ponto que calcula o preço de um pedido. V1 é deliberadamente
- * simples (unitPrice × quantity, sem desconto, sem frete) — mas toda
- * criação de Order passa por aqui, nunca por `unitPrice * quantity` solto
- * em outro módulo. Isso é o que permite trocar a implementação por uma
- * Pricing Engine de verdade (preço por faixa de quantidade, cupons, frete
- * por região) numa fase futura sem reescrever o Order Engine.
+ * Único ponto que calcula o preço de um pedido (Fase 4A). A matemática de
+ * "quanto custa esta oferta" vive em `resolveOfferPrice` (compartilhada
+ * com Builder e storefront) — aqui só se decide o que vira `OrderItem`.
+ *
+ * `unitPrice` do item resultante é o preço unitário EFETIVO (total/quantity,
+ * arredondado) — informativo para fulfillment/admin, nunca usado para
+ * recompor o total (isso é sempre `lineTotal`, exato, sem divisão). Ver
+ * modules/orders/handlers/shopify-order-create.ts: o worker Shopify usa
+ * sempre `lineTotal` diretamente, nunca `unitPrice × quantity`, exatamente
+ * para não reintroduzir o problema de arredondamento que um FIXED_TOTAL
+ * não divisível por quantity causaria.
  */
 export interface OrderQuoteInput {
-  unitPrice: number;
-  quantity: number;
+  productSnapshot: { unitPrice: number; title: string };
+  offer: OfferItem;
   currency: string;
-  titleSnapshot: string;
 }
 
 export interface OrderQuoteItem {
@@ -34,28 +40,24 @@ export interface OrderQuote {
 }
 
 export function calculateOrderQuote(input: OrderQuoteInput): OrderQuote {
-  const unitPrice = roundMoney(input.unitPrice);
-  const lineSubtotal = roundMoney(unitPrice * input.quantity);
-  // V1: sem desconto, sem frete. Ver comentário acima — não implementar
-  // preços promocionais/frete aqui ainda, mesmo que pareça trivial.
-  const discountTotal = 0;
-  const lineTotal = roundMoney(lineSubtotal - discountTotal);
+  const resolved = resolveOfferPrice(input.productSnapshot.unitPrice, input.offer);
+  const effectiveUnitPrice = roundMoney(resolved.total / resolved.quantity);
 
   const item: OrderQuoteItem = {
-    titleSnapshot: input.titleSnapshot,
-    quantity: input.quantity,
-    unitPrice,
-    lineSubtotal,
-    discountTotal,
-    lineTotal,
+    titleSnapshot: input.productSnapshot.title,
+    quantity: resolved.quantity,
+    unitPrice: effectiveUnitPrice,
+    lineSubtotal: resolved.referenceSubtotal,
+    discountTotal: resolved.discount,
+    lineTotal: resolved.total,
   };
 
   return {
     currency: input.currency,
-    subtotal: lineSubtotal,
-    discountTotal,
+    subtotal: resolved.referenceSubtotal,
+    discountTotal: resolved.discount,
     shippingTotal: 0,
-    total: lineTotal,
+    total: resolved.total,
     items: [item],
   };
 }

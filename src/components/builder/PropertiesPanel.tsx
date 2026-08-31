@@ -23,6 +23,7 @@ export function PropertiesPanel({
   funnelId,
   shopifyStoreId,
   unitPrice,
+  currency,
   upsellProduct,
   onUpsellProductChange,
 }: {
@@ -32,6 +33,7 @@ export function PropertiesPanel({
   funnelId: string;
   shopifyStoreId: string;
   unitPrice: number;
+  currency: string;
   upsellProduct: UpsellProductRef | null;
   onUpsellProductChange: (product: UpsellProductRef) => void;
 }) {
@@ -59,7 +61,7 @@ export function PropertiesPanel({
       {step.type === "PRODUCT" && <ProductStepEditor config={step.config} onChange={onChangeConfig} />}
       {step.type === "REWARD" && <RewardStepEditor config={step.config} onChange={onChangeConfig} />}
       {step.type === "OFFER" && (
-        <OfferStepEditor config={step.config} unitPrice={unitPrice} onChange={onChangeConfig} />
+        <OfferStepEditor config={step.config} unitPrice={unitPrice} currency={currency} onChange={onChangeConfig} />
       )}
       {step.type === "PAYMENT_CHOICE" && <PaymentChoiceEditor config={step.config} onChange={onChangeConfig} />}
       {step.type === "COD_FORM" && <CodFormEditor config={step.config} onChange={onChangeConfig} />}
