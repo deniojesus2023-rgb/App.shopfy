@@ -12,6 +12,15 @@ const STATUS_LABEL: Record<string, string> = {
   REFUSED: "Rechazado",
 };
 
+const SYNC_LABEL: Record<string, string> = {
+  PENDING: "Pendiente",
+  SYNCING: "Sincronizando",
+  SYNCED: "Sincronizado",
+  FAILED: "Falló",
+  REAUTH_REQUIRED: "Requiere reconexión",
+  MANUAL_REVIEW: "Revisión manual (posible duplicado en Shopify)",
+};
+
 const SOURCE_LABEL: Record<string, string> = {
   STOREFRONT: "Cliente",
   SYSTEM: "Sistema",
@@ -65,7 +74,9 @@ export default async function OrderDetailPage({
         <section className="rounded-lg border border-neutral-200 p-4">
           <h2 className="mb-3 text-sm font-semibold text-neutral-500">Integración Shopify</h2>
           <dl className="flex flex-col gap-2 text-sm">
-            <Row label="Estado de sincronización">{order.shopifySyncStatus}</Row>
+            <Row label="Estado de sincronización">
+              {SYNC_LABEL[order.shopifySyncStatus] ?? order.shopifySyncStatus}
+            </Row>
             <Row label="Pedido Shopify">{order.shopifyOrderName ?? "—"}</Row>
             <Row label="Creado en Shopify">
               {order.shopifyCreatedAt ? order.shopifyCreatedAt.toLocaleString("es-CO") : "—"}

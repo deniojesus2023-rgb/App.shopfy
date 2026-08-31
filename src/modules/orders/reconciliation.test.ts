@@ -56,7 +56,50 @@ beforeEach(() => {
 });
 
 describe("reconcileOrderCreatedWebhook", () => {
-  it("(A) tag internal_order_<id> bate com um Order nosso — reconcilia, nunca duplica", async () => {
+  it("(A) source_identifier bate com um Order nosso — reconcilia, nunca duplica", async () => {
+    orders.push({
+      id: "corder1",
+      workspaceId: "ws_1",
+      shopifyOrderId: null,
+      shopifyOrderName: null,
+      shopifySyncStatus: "PENDING",
+      status: "PENDING",
+      cancelledAt: null,
+    });
+
+    const outcome = await reconcileOrderCreatedWebhook({
+      id: 999,
+      name: "#999",
+      source_identifier: "appshopfy_order_corder1",
+    });
+
+    expect(outcome).toBe("reconciled");
+    expect(orders[0].shopifyOrderId).toBe("gid://shopify/Order/999");
+    expect(orders[0].shopifySyncStatus).toBe("SYNCED");
+  });
+
+  it("source_identifier tem precedência sobre a tag (tag pode ter sido editada na Shopify)", async () => {
+    orders.push({
+      id: "corder1",
+      workspaceId: "ws_1",
+      shopifyOrderId: null,
+      shopifyOrderName: null,
+      shopifySyncStatus: "PENDING",
+      status: "PENDING",
+      cancelledAt: null,
+    });
+
+    const outcome = await reconcileOrderCreatedWebhook({
+      id: 999,
+      source_identifier: "appshopfy_order_corder1",
+      tags: "cod, internal_order_outro_pedido",
+    });
+
+    expect(outcome).toBe("reconciled");
+    expect(orders[0].shopifyOrderId).toBe("gid://shopify/Order/999");
+  });
+
+  it("(A) fallback pela tag continua funcionando para pedidos criados antes do sourceIdentifier", async () => {
     orders.push({
       id: "corder1",
       workspaceId: "ws_1",

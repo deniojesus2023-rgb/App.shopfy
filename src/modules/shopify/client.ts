@@ -13,6 +13,12 @@ export class ShopifyApiError extends Error {
     super(message);
     this.name = "ShopifyApiError";
   }
+
+  /** Status HTTP quando a falha veio de uma resposta (não de transporte). */
+  get httpStatus(): number | null {
+    const status = (this.details as { status?: unknown } | undefined)?.status;
+    return typeof status === "number" ? status : null;
+  }
 }
 
 /** Token inválido/revogado (HTTP 401). Não adianta retentar com o mesmo token. */
@@ -28,6 +34,20 @@ export class ShopifyThrottledError extends ShopifyApiError {
   constructor(message = "Requisição throttled pela Shopify (limite de custo da API).") {
     super(message);
     this.name = "ShopifyThrottledError";
+  }
+}
+
+/**
+ * Estourou o tempo limite do cliente esperando resposta. Diferente de
+ * throttle: aqui a request PODE ter sido processada pela Shopify — quem
+ * chama precisa tratar como resultado ambíguo (ver
+ * modules/orders/handlers/shopify-order-create.ts) e nunca simplesmente
+ * repetir uma mutação de escrita.
+ */
+export class ShopifyTimeoutError extends ShopifyApiError {
+  constructor(message = "Tempo limite excedido esperando a Shopify responder.") {
+    super(message);
+    this.name = "ShopifyTimeoutError";
   }
 }
 
@@ -59,21 +79,46 @@ export interface ShopifyGraphqlResult<T> {
  * é o que permite auditar "todo lugar que usa o token" em um arquivo só, e
  * tratar de forma uniforme autenticação inválida e throttling.
  */
-export function createShopifyGraphqlClient(shopDomain: string, accessToken: string) {
+export interface ShopifyClientOptions {
+  /**
+   * Tempo limite por request. Opcional e sem default de propósito: os
+   * callers de catálogo (Fase 1B) seguem com o comportamento anterior
+   * (sem AbortSignal). O módulo de pedidos passa um valor explícito
+   * porque, numa mutação de escrita, uma conexão pendurada precisa virar
+   * um erro classificável (`ShopifyTimeoutError` = ambíguo) em vez de
+   * bloquear o worker até a plataforma matar a função.
+   */
+  timeoutMs?: number;
+}
+
+export function createShopifyGraphqlClient(
+  shopDomain: string,
+  accessToken: string,
+  options: ShopifyClientOptions = {}
+) {
   const endpoint = `https://${shopDomain}/admin/api/${SHOPIFY_API_VERSION}/graphql.json`;
 
   async function requestWithMeta<T>(
     query: string,
     variables?: Record<string, unknown>
   ): Promise<ShopifyGraphqlResult<T>> {
-    const response = await fetch(endpoint, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Shopify-Access-Token": accessToken,
-      },
-      body: JSON.stringify({ query, variables }),
-    });
+    let response: Response;
+    try {
+      response = await fetch(endpoint, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Shopify-Access-Token": accessToken,
+        },
+        body: JSON.stringify({ query, variables }),
+        signal: options.timeoutMs ? AbortSignal.timeout(options.timeoutMs) : undefined,
+      });
+    } catch (error) {
+      if (error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError")) {
+        throw new ShopifyTimeoutError();
+      }
+      throw error;
+    }
 
     if (response.status === 401) {
       throw new ShopifyAuthError();

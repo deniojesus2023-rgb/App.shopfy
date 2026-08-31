@@ -28,6 +28,7 @@ const SYNC_LABEL: Record<string, string> = {
   SYNCED: "Sincronizado",
   FAILED: "Falló",
   REAUTH_REQUIRED: "Requiere reconexión",
+  MANUAL_REVIEW: "Revisión manual",
 };
 
 const FILTER_TABS: Array<{ value: string; label: string }> = [

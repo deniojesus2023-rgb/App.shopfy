@@ -5,16 +5,61 @@ import { env } from "@/lib/env";
 import { logAudit } from "@/modules/audit/service";
 import { NonRetryableJobError } from "@/modules/queue/errors";
 import type { ShopifyOrderCreatePayload } from "@/modules/queue/types";
-import { ShopifyAuthError } from "@/modules/shopify/client";
-import { createShopifyOrder, findShopifyOrderByInternalTag } from "@/modules/shopify/orders";
+import { ShopifyApiError, ShopifyAuthError, ShopifyThrottledError, ShopifyTimeoutError } from "@/modules/shopify/client";
+import { createShopifyOrder, findShopifyOrdersBySourceIdentifier, type ShopifyOrderRef } from "@/modules/shopify/orders";
 import { getDecryptedAccessToken } from "@/modules/shopify/stores/service";
+import { roundMoney } from "@/modules/shared/money";
+import { redactOrderFields } from "@/modules/shared/redact";
+import { orderSourceIdentifier } from "../shopify-identity";
 import { internalOrderTag } from "../shopify-tag";
 
 /**
- * Worker do job SHOPIFY_ORDER_CREATE (spec item 9/17). O Order local já
- * existe e já é a fonte de verdade da venda — esta função só tenta refletir
- * isso na Shopify, com retry/backoff da fila cuidando de instabilidade
- * temporária (a Shopify é downstream, nunca bloqueia a venda).
+ * Classificação da falha de uma tentativa de `orderCreate`, do ponto de
+ * vista da ÚNICA pergunta que importa para idempotência externa: "esta
+ * falha pode ter deixado um pedido criado na Shopify?".
+ *
+ * - `safe`: a Shopify rejeitou a request ANTES de executar a mutação
+ *   (throttle, 4xx). Nenhum pedido foi criado — a próxima tentativa pode
+ *   ir direto ao `orderCreate` sem gastar uma consulta de reconciliação.
+ * - `ambiguous`: timeout, falha de rede, 5xx, ou qualquer erro
+ *   desconhecido. A mutação PODE ter sido executada — a próxima tentativa
+ *   é obrigada a reconciliar antes de criar. Default conservador de
+ *   propósito: um erro que não sabemos classificar é sempre ambíguo.
+ */
+type FailureClass = "safe" | "ambiguous";
+
+export function classifyShopifyFailure(error: unknown): FailureClass {
+  // Throttle: a Shopify recusa a request pelo custo antes de processá-la.
+  if (error instanceof ShopifyThrottledError) return "safe";
+  // Timeout do nosso lado: a request pode ter chegado e sido processada.
+  if (error instanceof ShopifyTimeoutError) return "ambiguous";
+  if (error instanceof ShopifyApiError) {
+    const status = error.httpStatus;
+    // 5xx pode ser falha DEPOIS da mutação ter sido aplicada.
+    if (status !== null && status >= 500) return "ambiguous";
+    // 4xx (fora 401, tratado antes) = request rejeitada, nada criado.
+    if (status !== null && status >= 400) return "safe";
+    return "ambiguous";
+  }
+  // Erro de transporte (reset de conexão, DNS, etc.) ou desconhecido.
+  return "ambiguous";
+}
+
+/**
+ * Worker do job SHOPIFY_ORDER_CREATE. O Order local já existe e já é a
+ * fonte de verdade da venda — esta função só reflete isso na Shopify.
+ *
+ * Idempotência externa (a Shopify não oferece idempotency key para
+ * `orderCreate`): a identidade é o `sourceIdentifier`
+ * `appshopfy_order_<Order.id>`, gravado no pedido na criação e filtrável
+ * por `source_identifier:` na query `orders`. A regra de reconciliação é
+ * baseada num marcador durável: `shopifySyncStatus = SYNCING` é gravado
+ * ANTES de qualquer chamada de rede, então
+ *   - status PENDING  ⇒ nenhum `orderCreate` foi tentado ⇒ pode criar direto;
+ *   - status SYNCING  ⇒ uma tentativa anterior chegou até a rede e o
+ *                       resultado é desconhecido ⇒ TEM que reconciliar antes.
+ * É isso que fecha a janela "worker criou na Shopify → resposta se perdeu →
+ * worker morreu → job foi recuperado por outro worker".
  */
 export async function processShopifyOrderCreateJob(payload: ShopifyOrderCreatePayload): Promise<void> {
   const order = await prisma.order.findUnique({
@@ -26,18 +71,23 @@ export async function processShopifyOrderCreateJob(payload: ShopifyOrderCreatePa
   }
 
   if (order.shopifyOrderId) {
-    // Já sincronizado (ex.: job reprocessado após COMPLETED por engano) —
-    // idempotente, não repete a chamada.
+    // Já sincronizado (ex.: webhook orders/create reconciliou antes do
+    // worker, ou job reprocessado) — idempotente, não repete a chamada.
     if (order.shopifySyncStatus !== "SYNCED") {
       await prisma.order.update({ where: { id: order.id }, data: { shopifySyncStatus: "SYNCED" } });
     }
     return;
   }
 
+  if (order.shopifySyncStatus === "MANUAL_REVIEW") {
+    // Duplicata externa já detectada numa tentativa anterior — nunca
+    // tentar de novo por conta própria.
+    throw new NonRetryableJobError("Pedido aguardando reconciliação manual na Shopify.");
+  }
+
   if (!env.SHOPIFY_ORDER_SYNC_ENABLED) {
-    // Dev/test sem o interruptor ligado (spec item 32): nunca chama a
-    // Shopify. O Order continua PENDING de sync — comportamento esperado e
-    // documentado, não um erro. Completa o job para não empilhar retry.
+    // Dev/test sem o interruptor ligado: nunca chama a Shopify. O Order
+    // continua PENDING de sync — comportamento esperado e documentado.
     return;
   }
 
@@ -47,7 +97,27 @@ export async function processShopifyOrderCreateJob(payload: ShopifyOrderCreatePa
     throw new NonRetryableJobError("Loja Shopify não está conectada.");
   }
 
-  await prisma.order.update({ where: { id: order.id }, data: { shopifySyncStatus: "SYNCING" } });
+  // Fidelidade do quote: sem `variantId`, o total que a Shopify calcula é
+  // exatamente Σ(unitPrice × quantity). Se o Order local tiver desconto ou
+  // frete (V1 nunca tem, mas uma Pricing Engine futura pode), esse mapeamento
+  // deixaria de representar o que o cliente aceitou — falha fechada antes de
+  // criar qualquer coisa lá, em vez de cobrar um valor divergente.
+  const lineItemsTotal = roundMoney(
+    order.items.reduce((sum, item) => sum + Number(item.unitPrice) * item.quantity, 0)
+  );
+  if (lineItemsTotal !== roundMoney(Number(order.total))) {
+    await prisma.order.update({ where: { id: order.id }, data: { shopifySyncStatus: "FAILED" } });
+    throw new NonRetryableJobError(
+      "Quote local não é representável como line items simples (desconto/frete ainda não suportados na criação Shopify)."
+    );
+  }
+
+  // PENDING é o ÚNICO estado que prova que nenhuma tentativa chegou à
+  // rede (o marcador SYNCING é gravado antes do primeiro byte sair).
+  // Qualquer outro estado — SYNCING (tentativa ambígua), FAILED (tentativa
+  // que esgotou retries e pode ter criado) — obriga a reconciliar antes.
+  const needsReconciliationFirst = order.shopifySyncStatus !== "PENDING";
+  const sourceIdentifier = orderSourceIdentifier(order.id);
 
   let accessToken: string;
   try {
@@ -57,26 +127,25 @@ export async function processShopifyOrderCreateJob(payload: ShopifyOrderCreatePa
     throw new NonRetryableJobError("Token indisponível.");
   }
 
-  const tag = internalOrderTag(order.id);
+  if (needsReconciliationFirst) {
+    const reconciled = await reconcileBeforeCreate(order, accessToken, sourceIdentifier);
+    if (reconciled) return;
+  }
+
+  // Marcador durável de "a partir daqui, o resultado pode ser ambíguo".
+  await prisma.order.update({ where: { id: order.id }, data: { shopifySyncStatus: "SYNCING" } });
 
   try {
-    // Reconciliação (spec item 21/6): procura antes de criar — cobre o
-    // caso "Shopify criou, resposta caiu antes de persistir localmente".
-    const reconciled = await findShopifyOrderByInternalTag(store.shopDomain, accessToken, tag);
-    if (reconciled) {
-      await persistSyncedOrder(order.id, reconciled);
-      return;
-    }
-
     const outcome = await createShopifyOrder(store.shopDomain, accessToken, {
       currency: order.currency,
-      internalOrderTag: tag,
+      sourceIdentifier,
+      internalOrderTag: internalOrderTag(order.id),
       note: `Pedido COD #${order.orderNumber}`,
       phone: order.codLead.phone,
       lineItems: order.items.map((item) => ({
         title: item.titleSnapshot,
         quantity: item.quantity,
-        unitPrice: item.unitPrice.toString(),
+        unitPrice: item.unitPrice.toFixed(2),
       })),
       shippingAddress: {
         firstName: order.codLead.name,
@@ -89,6 +158,8 @@ export async function processShopifyOrderCreateJob(payload: ShopifyOrderCreatePa
     });
 
     if (outcome.outcome === "userErrors") {
+      // A Shopify rejeitou o CONTEÚDO da mutation: nada foi criado e
+      // retentar o mesmo payload nunca vai funcionar.
       await prisma.order.update({ where: { id: order.id }, data: { shopifySyncStatus: "FAILED" } });
       await logAudit({
         workspaceId: order.workspaceId,
@@ -98,26 +169,101 @@ export async function processShopifyOrderCreateJob(payload: ShopifyOrderCreatePa
         entityId: order.id,
         metadata: { errors: outcome.errors },
       });
-      // userErrors é a Shopify rejeitando o CONTEÚDO da mutation —
-      // retentar o mesmo payload nunca vai funcionar.
       throw new NonRetryableJobError(`Shopify rejeitou o pedido: ${outcome.errors.join("; ")}`);
     }
 
     await persistSyncedOrder(order.id, outcome.result);
   } catch (error) {
+    if (error instanceof NonRetryableJobError) throw error;
+
     if (error instanceof ShopifyAuthError) {
+      // 401 é rejeitado antes de qualquer mutação — nada foi criado.
       await markReauthRequired(order.id, order.shopifyStoreId);
       throw new NonRetryableJobError("Reautorização necessária.");
     }
-    // Throttle/timeout/5xx: deixa subir — a fila retenta com backoff.
+
+    const failureClass = classifyShopifyFailure(error);
+    if (failureClass === "safe") {
+      // Volta o marcador: a próxima tentativa sabe que não precisa gastar
+      // uma consulta de reconciliação.
+      await prisma.order.update({ where: { id: order.id }, data: { shopifySyncStatus: "PENDING" } });
+    }
+    // Em `ambiguous`, o status fica em SYNCING de propósito — é o que
+    // obriga a próxima tentativa a reconciliar antes de criar.
+
+    console.error(
+      "[orders] shopify order create failed",
+      redactOrderFields({
+        orderId: order.id,
+        workspaceId: order.workspaceId,
+        shopifyStoreId: order.shopifyStoreId,
+        shopifySyncStatus: failureClass === "safe" ? "PENDING" : "SYNCING",
+        errorCode: failureClass,
+      })
+    );
+
+    // Sobe para a fila retentar com backoff (ambos os casos são
+    // retentáveis — a diferença está em precisar reconciliar antes).
     throw error;
   }
 }
 
-async function persistSyncedOrder(
-  orderId: string,
-  result: { shopifyOrderId: string; shopifyOrderName: string; shopifyCreatedAt: string }
-): Promise<void> {
+/**
+ * Consulta a Shopify por `source_identifier` antes de repetir uma criação
+ * cujo resultado é desconhecido. Retorna `true` quando o pedido já existe
+ * lá (reconciliado, nada mais a fazer).
+ */
+async function reconcileBeforeCreate(
+  order: { id: string; workspaceId: string; shopifyStoreId: string; shopifyStore: { shopDomain: string } },
+  accessToken: string,
+  sourceIdentifier: string
+): Promise<boolean> {
+  const matches = await findShopifyOrdersBySourceIdentifier(
+    order.shopifyStore.shopDomain,
+    accessToken,
+    sourceIdentifier
+  );
+
+  if (matches.length === 1) {
+    await persistSyncedOrder(order.id, matches[0]);
+    return true;
+  }
+
+  if (matches.length > 1) {
+    // Duplicata externa real: alguma tentativa anterior criou mais de um
+    // pedido. Nunca criar outro, nunca escolher um sozinho — isso é
+    // decisão humana (qual manter, qual cancelar na Shopify).
+    await prisma.order.update({ where: { id: order.id }, data: { shopifySyncStatus: "MANUAL_REVIEW" } });
+    await logAudit({
+      workspaceId: order.workspaceId,
+      userId: null,
+      action: "order.shopify_sync_failed",
+      entityType: "Order",
+      entityId: order.id,
+      metadata: { reason: "duplicate_source_identifier", matches: matches.length },
+    });
+    console.error(
+      "[orders] duplicate shopify orders for source identifier",
+      redactOrderFields({
+        orderId: order.id,
+        workspaceId: order.workspaceId,
+        shopifyStoreId: order.shopifyStoreId,
+        shopifySyncStatus: "MANUAL_REVIEW",
+        errorCode: "duplicate_source_identifier",
+      })
+    );
+    throw new NonRetryableJobError(
+      "Mais de um pedido na Shopify com o mesmo identificador de origem — reconciliação manual necessária."
+    );
+  }
+
+  // Nenhum resultado: a tentativa anterior realmente não criou nada
+  // (ou o índice de busca ainda não refletiu). Segue para a criação
+  // normal, conforme a política de retry existente.
+  return false;
+}
+
+async function persistSyncedOrder(orderId: string, result: ShopifyOrderRef): Promise<void> {
   const order = await prisma.order.update({
     where: { id: orderId },
     data: {

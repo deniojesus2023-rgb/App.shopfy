@@ -402,13 +402,46 @@ temporária da Shopify nunca faz o cliente perder o pedido.
   Throttle/timeout/5xx sobem e a fila retenta com backoff; se as tentativas
   se esgotarem, o cron marca `shopifySyncStatus = FAILED` explicitamente
   (nunca fica preso em SYNCING para sempre).
-- **Idempotência externa (Shopify)**: não há garantia oficial de
-  idempotency-key confirmada para `orderCreate` (não pude reconferir a
-  doc). Mitigação: toda ordem leva a tag `internal_order_<id>`; o worker
-  busca por ela antes de criar — cobre o caso "Shopify criou, resposta
-  caiu, worker retentou". É best-effort, não uma garantia formal.
-- **Webhook reconciliation**: `orders/create` distingue pedido nosso (tag
-  `internal_order_<id>` presente) de pedido criado direto na Shopify —
+- **Idempotência externa (Shopify)**: `orderCreate` não tem idempotency key
+  nativa, então a identidade é o **`sourceIdentifier`**
+  (`appshopfy_order_<Order.id>`, `modules/orders/shopify-identity.ts`) —
+  campo documentado para "ID no sistema de origem", filtrável por
+  `source_identifier:` na query `orders`, namespaced e sem PII. A tag
+  `internal_order_<id>` continua sendo enviada, mas **só como apoio visual
+  ao lojista**: tag é editável pela UI da Shopify e por outros apps, então
+  nunca decide identidade.
+  A regra de reconciliação usa um marcador durável: `shopifySyncStatus =
+  SYNCING` é gravado **antes** de qualquer byte sair, então `PENDING` prova
+  que nenhuma criação foi tentada (cria direto, sem gastar consulta) e
+  qualquer outro estado obriga a consultar `source_identifier` antes de
+  criar. Resultado da consulta: **0** libera o retry normal, **1**
+  reconcilia (`shopifyOrderId`/`shopifyOrderName`/`SYNCED`, sem segundo
+  `orderCreate`), **>1** falha fechado em `ShopifySyncStatus.MANUAL_REVIEW`
+  — nunca cria outro pedido nem escolhe um candidato sozinho, e emite log
+  operacional sem PII. É isso que fecha a corrida "worker criou na Shopify →
+  resposta se perdeu → worker morreu → job recuperado por outro worker".
+  *Risco residual honesto:* a consulta passa pelo índice de busca da
+  Shopify, que não garante contratualmente leitura-após-escrita imediata;
+  na prática ela só roda na tentativa seguinte (backoff ≥ 30s, ou 5 min no
+  caso de job órfão), bem longe da escrita.
+- **Classificação de falha** (`classifyShopifyFailure`): `401` e
+  `userErrors` são definitivos (nada criado) → não-retryable; throttle e
+  `4xx` são **seguros** → status volta a `PENDING` e a próxima tentativa
+  pula a consulta; timeout (`ShopifyTimeoutError`, o cliente de pedidos usa
+  `AbortSignal` explícito), `5xx`, falha de transporte e qualquer erro
+  desconhecido são **ambíguos** → status permanece `SYNCING`, obrigando a
+  reconciliação antes de qualquer nova criação. O default de um erro
+  não classificado é sempre "ambíguo".
+- **Fidelidade do quote**: line items são custom (sem `variantId`), com
+  `priceSet` = preço **unitário** (`Decimal.toFixed(2)`) no dinheiro da
+  loja — a Shopify multiplica por `quantity` e não tem de onde buscar um
+  preço "atual" do produto. Antes de criar, o worker confere que
+  Σ(unitPrice × quantity) bate com `Order.total`; se não bater (um quote
+  futuro com frete/desconto, por exemplo), falha fechado em vez de criar
+  na Shopify um pedido com valor diferente do que o cliente aceitou.
+- **Webhook reconciliation**: `orders/create` identifica pedido nosso pelo
+  `source_identifier` (tag só como fallback para pedidos anteriores a esta
+  estratégia) e distingue de pedido criado direto na Shopify —
   este último nunca é importado, só marcado como evento externo conhecido.
   `orders/updated` fica travado em cancelamento e fulfillment, sempre
   gerando `OrderStatusHistory(source: SHOPIFY)`.
@@ -490,14 +523,26 @@ Order separado, corrida real via `P2002` nunca duplica —, transação
 atômica CodLead+Order+OrderItem+OrderStatusHistory+BackgroundJob, job
 minimalista sem PII, resposta pública sem IDs internos), o job
 `SHOPIFY_ORDER_CREATE` (idempotente, respeita `SHOPIFY_ORDER_SYNC_ENABLED
-=false`, reconciliação por tag antes de criar, `userErrors` não-retryable,
-`ShopifyAuthError` → `REAUTH_REQUIRED` não-retryable, throttle sobe para
-retry da fila, loja desconectada falha sem tentar rede),
-`createShopifyOrder`/`findShopifyOrderByInternalTag` (nunca `PAID`, custom
-line items com o preço exato do quote, tag interna sempre presente,
-`userErrors` retornado em vez de lançar), `reconcileOrderCreatedWebhook`/
+=false`, `sourceIdentifier` enviado e sem PII, primeira tentativa não gasta
+consulta, retry após falha ambígua reconcilia por `source_identifier` antes
+de criar, pedido existente não gera segundo `orderCreate`, zero resultados
+libera retry, múltiplos resultados falham fechado em `MANUAL_REVIEW` com
+log sem PII, timeout após criação remota é reconciliado na tentativa
+seguinte, quote não representável falha antes de tocar a Shopify,
+`userErrors` não-retryable, `ShopifyAuthError` → `REAUTH_REQUIRED`
+não-retryable, throttle volta a `PENDING` e sobe para retry da fila, loja
+desconectada falha sem tentar rede), `classifyShopifyFailure`
+(safe × ambíguo para throttle/4xx/timeout/5xx/transporte),
+`createShopifyOrder`/`findShopifyOrdersBySourceIdentifier` (nunca `PAID` e
+nunca `transactions`, custom line items com preço unitário exato do quote,
+identidade independente da tag, `first` > 1 para detectar duplicata,
+`userErrors` retornado em vez de lançar), `orderSourceIdentifier`
+(estável, namespaced, sem PII, seguro para a sintaxe de busca),
+`reconcileOrderCreatedWebhook`/
 `reconcileOrderUpdatedWebhook` (pedido nosso vs. externo nunca duplicado,
-cancelamento/fulfillment geram `OrderStatusHistory(source: SHOPIFY)`),
+`source_identifier` com precedência sobre a tag, fallback por tag
+preservado, cancelamento/fulfillment geram `OrderStatusHistory(source:
+SHOPIFY)`),
 isolamento de tenant do admin de pedidos, `enqueueJobInTx` aceitando um
 `tx` de transação (não só o `prisma` singleton), `redactOrderFields`
 (allowlist, PII nunca escapa) e RBAC `orders:view`/`orders:manage`. Toda

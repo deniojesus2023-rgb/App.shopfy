@@ -614,6 +614,11 @@ enum ShopifySyncStatus {
   SYNCED
   FAILED
   REAUTH_REQUIRED
+  // Reconciliação encontrou MAIS DE UM pedido na Shopify com o nosso
+  // `sourceIdentifier` (duplicata externa). Falha fechada: o worker nunca
+  // cria outro pedido nem escolhe um dos candidatos sozinho — precisa de
+  // decisão humana sobre qual manter/cancelar na Shopify.
+  MANUAL_REVIEW
 }
 
 enum OrderPaymentMethod {

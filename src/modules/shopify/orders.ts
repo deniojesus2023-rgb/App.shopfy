@@ -3,6 +3,15 @@ import "server-only";
 import { createShopifyGraphqlClient } from "./client";
 
 /**
+ * Tempo limite explícito para as chamadas de pedido. Uma conexão pendurada
+ * numa MUTAÇÃO DE ESCRITA precisa virar `ShopifyTimeoutError` (tratado como
+ * resultado ambíguo pelo worker) em vez de segurar o worker até a
+ * plataforma matar a função — o que deixaria o job órfão sem nenhuma
+ * classificação de erro registrada.
+ */
+const ORDER_REQUEST_TIMEOUT_MS = 15_000;
+
+/**
  * ATENÇÃO — mutação não reconferida contra a documentação ao vivo desta
  * fase: o sandbox onde isto foi escrito bloqueia egress para shopify.dev,
  * então o shape abaixo é a melhor reconstrução por conhecimento treinado
@@ -10,12 +19,16 @@ import { createShopifyGraphqlClient } from "./client";
  * uma cópia verificada da doc. Antes de setar `SHOPIFY_ORDER_SYNC_ENABLED
  * =true` em produção: validar este mutation shape contra
  * https://shopify.dev/docs/api/admin-graphql/<versão>/mutations/orderCreate
- * num dev store real. Decisões deliberadas para reduzir risco enquanto
- * isso não acontece:
+ * num dev store real. Decisões deliberadas para reduzir risco:
+ *   - `sourceIdentifier` carrega a identidade do nosso Order (é o campo
+ *     documentado para "ID no sistema de origem", e o único filtrável por
+ *     `source_identifier:` na query `orders`) — base da reconciliação.
  *   - `lineItems` são "custom line items" (sem `variantId`) — o preço vem
  *     sempre do nosso `calculateOrderQuote()`, nunca do Product ao vivo
- *     sincronizado na Shopify (spec item 19).
- *   - `financialStatus: PENDING` sempre — nunca simulamos pagamento (COD).
+ *     sincronizado na Shopify.
+ *   - `financialStatus: PENDING` sempre, e NENHUM bloco `transactions`:
+ *     COD não é pago no checkout, então não existe transação de sucesso
+ *     para registrar. Nunca simulamos pagamento.
  *   - Sem bloco `customer` (evita a ambiguidade de "associar vs criar
  *     cliente" que não pude confirmar) — nome/telefone vão em
  *     `shippingAddress`/`phone` apenas.
@@ -45,8 +58,14 @@ interface OrderCreateResponse {
 
 export interface CreateShopifyOrderInput {
   currency: string;
+  /**
+   * Preço UNITÁRIO por item, já formatado com 2 casas. A Shopify multiplica
+   * por `quantity` — enviar o total da linha aqui cobraria a mais.
+   */
   lineItems: Array<{ title: string; quantity: number; unitPrice: string }>;
-  /** Sem colon — a sintaxe de busca da Shopify (`tag:'...'`) trata `:` como delimitador. */
+  /** Identidade da reconciliação (modules/orders/shopify-identity.ts). */
+  sourceIdentifier: string;
+  /** Apoio visual para o lojista — nunca usado como identidade. */
   internalOrderTag: string;
   note?: string;
   phone?: string;
@@ -60,14 +79,14 @@ export interface CreateShopifyOrderInput {
   };
 }
 
-export interface CreateShopifyOrderResult {
+export interface ShopifyOrderRef {
   shopifyOrderId: string;
   shopifyOrderName: string;
   shopifyCreatedAt: string;
 }
 
 export type CreateShopifyOrderOutcome =
-  | { outcome: "created"; result: CreateShopifyOrderResult }
+  | { outcome: "created"; result: ShopifyOrderRef }
   | { outcome: "userErrors"; errors: string[] };
 
 export async function createShopifyOrder(
@@ -75,18 +94,24 @@ export async function createShopifyOrder(
   accessToken: string,
   input: CreateShopifyOrderInput
 ): Promise<CreateShopifyOrderOutcome> {
-  const client = createShopifyGraphqlClient(shopDomain, accessToken);
+  const client = createShopifyGraphqlClient(shopDomain, accessToken, {
+    timeoutMs: ORDER_REQUEST_TIMEOUT_MS,
+  });
 
   const data = await client.request<OrderCreateResponse>(ORDER_CREATE_MUTATION, {
     order: {
       currency: input.currency,
       financialStatus: "PENDING",
+      sourceIdentifier: input.sourceIdentifier,
       tags: ["cod", input.internalOrderTag],
       note: input.note,
       phone: input.phone,
       lineItems: input.lineItems.map((item) => ({
         title: item.title,
         quantity: item.quantity,
+        // priceSet = preço unitário no dinheiro da loja. É o que preserva o
+        // quote calculado pelo NOSSO servidor: sem `variantId`, a Shopify
+        // não tem para onde buscar um preço "atual" do produto.
         priceSet: { shopMoney: { amount: item.unitPrice, currencyCode: input.currency } },
         requiresShipping: true,
       })),
@@ -112,9 +137,12 @@ export async function createShopifyOrder(
   };
 }
 
-const FIND_ORDER_BY_TAG_QUERY = /* GraphQL */ `
-  query FindOrderByTag($query: String!) {
-    orders(first: 1, query: $query) {
+// `first: 5` (e não 1) de propósito: precisamos conseguir DISTINGUIR
+// "nenhum" de "exatamente um" de "mais de um". Com `first: 1` o caso de
+// duplicata seria invisível e reconciliaríamos contra um pedido arbitrário.
+const FIND_ORDERS_BY_SOURCE_IDENTIFIER_QUERY = /* GraphQL */ `
+  query FindOrdersBySourceIdentifier($query: String!) {
+    orders(first: 5, query: $query) {
       edges {
         node {
           id
@@ -126,28 +154,37 @@ const FIND_ORDER_BY_TAG_QUERY = /* GraphQL */ `
   }
 `;
 
-interface FindOrderByTagResponse {
+interface FindOrdersResponse {
   orders: { edges: Array<{ node: { id: string; name: string; createdAt: string } }> };
 }
 
 /**
- * Reconciliação (spec item 21/6): antes de criar, procura por um pedido já
- * criado com a mesma tag `internal_order_<id>` — cobre o caso "Shopify
- * criou, nossa resposta caiu antes de salvar localmente, worker retentou".
- * Não é uma garantia formal de idempotência (a Shopify não documenta uma
- * para `orderCreate` até onde pude confirmar) — é mitigação best-effort.
+ * Reconciliação: procura pedidos já criados com o nosso
+ * `sourceIdentifier`. Retorna a lista completa (até 5) para o caller
+ * decidir — 0 libera retry, 1 reconcilia, >1 precisa de intervenção
+ * manual (nunca criar mais um por cima de uma duplicata).
+ *
+ * Limitação conhecida: isto passa pelo índice de busca da Shopify, que não
+ * garante contratualmente leitura-após-escrita imediata. Na prática a
+ * consulta só acontece na tentativa seguinte (backoff ≥ 30s, ou 5 min no
+ * caso de job órfão), bem longe da escrita.
  */
-export async function findShopifyOrderByInternalTag(
+export async function findShopifyOrdersBySourceIdentifier(
   shopDomain: string,
   accessToken: string,
-  internalOrderTag: string
-): Promise<CreateShopifyOrderResult | null> {
-  const client = createShopifyGraphqlClient(shopDomain, accessToken);
-  const data = await client.request<FindOrderByTagResponse>(FIND_ORDER_BY_TAG_QUERY, {
-    query: `tag:'${internalOrderTag}'`,
+  sourceIdentifier: string
+): Promise<ShopifyOrderRef[]> {
+  const client = createShopifyGraphqlClient(shopDomain, accessToken, {
+    timeoutMs: ORDER_REQUEST_TIMEOUT_MS,
   });
 
-  const node = data.orders.edges[0]?.node;
-  if (!node) return null;
-  return { shopifyOrderId: node.id, shopifyOrderName: node.name, shopifyCreatedAt: node.createdAt };
+  const data = await client.request<FindOrdersResponse>(FIND_ORDERS_BY_SOURCE_IDENTIFIER_QUERY, {
+    query: `source_identifier:'${sourceIdentifier}'`,
+  });
+
+  return data.orders.edges.map((edge) => ({
+    shopifyOrderId: edge.node.id,
+    shopifyOrderName: edge.node.name,
+    shopifyCreatedAt: edge.node.createdAt,
+  }));
 }
