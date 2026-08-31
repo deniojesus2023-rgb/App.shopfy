@@ -3,7 +3,7 @@
 import { useState, useTransition } from "react";
 
 import { Button } from "@/components/ui/button";
-import { updateDraftConfigAction } from "@/modules/funnels/actions";
+import { updateDraftConfigAction } from "@/modules/funnels/admin/actions";
 
 export function ConfigEditor({
   workspaceSlug,

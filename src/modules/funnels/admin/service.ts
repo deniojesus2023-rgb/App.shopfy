@@ -1,14 +1,18 @@
 import "server-only";
 
+import { revalidateTag } from "next/cache";
+
 import { prisma } from "@/lib/db";
 import { logAudit } from "@/modules/audit/service";
 import { ConflictError, NotFoundError, ValidationError } from "@/modules/shared/errors";
 import { randomSlugSuffix, slugify } from "@/modules/shared/slug";
 import type { User } from "@prisma/client";
-import { migrateFunnelConfig } from "./config/migrate";
-import { parseFunnelConfig } from "./config/parse";
-import { CURRENT_FUNNEL_CONFIG_SCHEMA_VERSION } from "./config/schema";
-import { validateFunnelSemantics, type FunnelProductRef } from "./config/semantic-validation";
+import { migrateFunnelConfig } from "../config/migrate";
+import { parseFunnelConfig } from "../config/parse";
+import { CURRENT_FUNNEL_CONFIG_SCHEMA_VERSION } from "../config/schema";
+import { validateFunnelSemantics, type FunnelProductRef } from "../config/semantic-validation";
+import { funnelPublicCacheTag } from "../runtime/cache";
+import { generateFunnelPublicId } from "../runtime/public-id";
 
 // ---------------------------------------------------------------------------
 // Leitura
@@ -69,6 +73,18 @@ async function generateUniqueFunnelSlug(workspaceId: string, name: string): Prom
   throw new ValidationError("Não foi possível gerar um slug único para este funil.");
 }
 
+async function generateUniquePublicId(): Promise<string> {
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const candidate = generateFunnelPublicId();
+    const existing = await prisma.funnel.findUnique({
+      where: { publicId: candidate },
+      select: { id: true },
+    });
+    if (!existing) return candidate;
+  }
+  throw new ValidationError("Não foi possível gerar um identificador público único.");
+}
+
 interface CreateFunnelInput {
   workspaceId: string;
   shopifyStoreId: string;
@@ -118,6 +134,8 @@ export async function createFunnel(input: CreateFunnelInput) {
     throw new ValidationError("Já existe um funil com este slug neste workspace.");
   }
 
+  const publicId = await generateUniquePublicId();
+
   const funnel = await prisma.$transaction(async (tx) => {
     const created = await tx.funnel.create({
       data: {
@@ -125,6 +143,7 @@ export async function createFunnel(input: CreateFunnelInput) {
         shopifyStoreId: input.shopifyStoreId,
         name: input.name,
         slug,
+        publicId,
         status: "DRAFT",
         createdByUserId: input.user.id,
       },
@@ -310,6 +329,12 @@ export async function publishFunnel(workspaceId: string, funnelId: string, user:
     );
   }
 
+  const primaryRef = funnelProducts.find((p) => p.role === "PRIMARY");
+  if (!primaryRef) {
+    throw new ValidationError("Funil sem produto principal (PRIMARY) — não é possível publicar.");
+  }
+  const snapshotSource = await loadPrimaryProductSnapshotSource(primaryRef.productId);
+
   const published = await prisma.$transaction(async (tx) => {
     if (funnel.publishedVersionId) {
       await tx.funnelVersion.update({
@@ -323,6 +348,21 @@ export async function publishFunnel(workspaceId: string, funnelId: string, user:
       data: { status: "PUBLISHED", publishedAt: new Date() },
     });
 
+    // Snapshot imutável do produto no momento da publicação — o storefront
+    // público lê daqui, nunca do Product/ProductVariant ao vivo. Uma
+    // FunnelVersion só é publicada uma vez (republicar cria uma nova
+    // versão), então isto é sempre uma criação, nunca update.
+    await tx.funnelProductSnapshot.create({
+      data: {
+        funnelVersionId: publishedVersion.id,
+        productId: snapshotSource.productId,
+        title: snapshotSource.title,
+        featuredImageUrl: snapshotSource.featuredImageUrl,
+        unitPrice: snapshotSource.unitPrice,
+        compareAtPrice: snapshotSource.compareAtPrice,
+      },
+    });
+
     await tx.funnel.update({
       where: { id: funnel.id },
       data: { publishedVersionId: publishedVersion.id, status: "PUBLISHED" },
@@ -330,6 +370,10 @@ export async function publishFunnel(workspaceId: string, funnelId: string, user:
 
     return publishedVersion;
   });
+
+  // Fora da transação (best-effort, não deve fazer a publicação falhar) —
+  // é isto que faz a próxima leitura pública buscar a versão nova.
+  revalidateTag(funnelPublicCacheTag(funnel.publicId));
 
   await logAudit({
     workspaceId,
@@ -343,6 +387,45 @@ export async function publishFunnel(workspaceId: string, funnelId: string, user:
   return published;
 }
 
+interface PrimaryProductSnapshotSource {
+  productId: string;
+  title: string;
+  featuredImageUrl: string | null;
+  unitPrice: number;
+  compareAtPrice: number | null;
+}
+
+async function loadPrimaryProductSnapshotSource(
+  productId: string
+): Promise<PrimaryProductSnapshotSource> {
+  const product = await prisma.product.findUnique({
+    where: { id: productId },
+    include: {
+      variants: {
+        where: { deletedAt: null },
+        orderBy: { position: "asc" },
+        take: 1,
+      },
+    },
+  });
+  if (!product) {
+    throw new ValidationError("Produto principal do funil não foi encontrado.");
+  }
+
+  const variant = product.variants[0];
+  if (!variant) {
+    throw new ValidationError("Produto principal não possui variantes disponíveis para publicar.");
+  }
+
+  return {
+    productId: product.id,
+    title: product.title,
+    featuredImageUrl: product.featuredImageUrl,
+    unitPrice: variant.price.toNumber(),
+    compareAtPrice: variant.compareAtPrice?.toNumber() ?? null,
+  };
+}
+
 export async function archiveFunnel(workspaceId: string, funnelId: string, user: User) {
   const funnel = await prisma.funnel.findFirst({ where: { id: funnelId, workspaceId } });
   if (!funnel) {
@@ -353,6 +436,10 @@ export async function archiveFunnel(workspaceId: string, funnelId: string, user:
     where: { id: funnel.id },
     data: { status: "ARCHIVED", archivedAt: new Date() },
   });
+
+  // Um funil arquivado deixa de ser servido publicamente — mesmo mecanismo
+  // de invalidação usado na publicação.
+  revalidateTag(funnelPublicCacheTag(funnel.publicId));
 
   await logAudit({
     workspaceId,

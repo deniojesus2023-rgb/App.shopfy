@@ -407,6 +407,11 @@ model Funnel {
   shopifyStoreId     String
   name               String
   slug               String
+  // Identificador de resolução pública (/f/[publicId]/[slug]) — aleatório
+  // (crypto.randomBytes, não derivado de slug/nome/id), nunca substitui
+  // autorização interna. O storefront público resolve por isto, nunca por
+  // workspaceId/shopifyStoreId vindos do client.
+  publicId           String       @unique
   status             FunnelStatus @default(DRAFT)
   publishedVersionId String?      @unique
   createdByUserId    String
@@ -454,14 +459,36 @@ model FunnelVersion {
   updatedAt           DateTime            @updatedAt
   publishedAt         DateTime?
 
-  workspace          Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  funnel             Funnel    @relation("FunnelVersions", fields: [funnelId], references: [id], onDelete: Cascade)
-  createdBy          User      @relation(fields: [createdByUserId], references: [id])
-  publishedForFunnel Funnel?   @relation("PublishedVersion")
+  workspace          Workspace              @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  funnel             Funnel                 @relation("FunnelVersions", fields: [funnelId], references: [id], onDelete: Cascade)
+  createdBy          User                   @relation(fields: [createdByUserId], references: [id])
+  publishedForFunnel Funnel?                @relation("PublishedVersion")
+  productSnapshot    FunnelProductSnapshot?
 
   @@unique([funnelId, versionNumber])
   @@index([funnelId, status])
   @@map("funnel_versions")
+}
+
+/// Snapshot do produto PRIMARY no momento da publicação. Um funil publicado
+/// não deve mudar de aparência porque o catálogo foi ressincronizado depois
+/// — o storefront público lê SEMPRE daqui, nunca do Product/ProductVariant
+/// ao vivo. `unitPrice` é a base para o cálculo de preço por quantidade no
+/// OFFER step (unitPrice × quantity — mecanismo simples e explícito, sem
+/// pricing rules ainda).
+model FunnelProductSnapshot {
+  id               String   @id @default(cuid())
+  funnelVersionId  String   @unique
+  productId        String
+  title            String
+  featuredImageUrl String?
+  unitPrice        Decimal  @db.Decimal(12, 2)
+  compareAtPrice   Decimal? @db.Decimal(12, 2)
+  createdAt        DateTime @default(now())
+
+  funnelVersion FunnelVersion @relation(fields: [funnelVersionId], references: [id], onDelete: Cascade)
+
+  @@map("funnel_product_snapshots")
 }
 
 enum FunnelProductRole {

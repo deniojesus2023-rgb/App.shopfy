@@ -4,7 +4,7 @@ import { useRouter } from "next/navigation";
 import { useState, useTransition } from "react";
 
 import { Button } from "@/components/ui/button";
-import { archiveFunnelAction, ensureDraftVersionAction, publishFunnelAction } from "@/modules/funnels/actions";
+import { archiveFunnelAction, ensureDraftVersionAction, publishFunnelAction } from "@/modules/funnels/admin/actions";
 
 export function CreateDraftButton({ workspaceSlug, funnelId }: { workspaceSlug: string; funnelId: string }) {
   const router = useRouter();

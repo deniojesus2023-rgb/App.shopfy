@@ -10,10 +10,20 @@ interface FakeStore {
   id: string;
   workspaceId: string;
 }
+interface FakeVariant {
+  id: string;
+  price: { toNumber: () => number };
+  compareAtPrice: { toNumber: () => number } | null;
+  position: number;
+  deletedAt: Date | null;
+}
 interface FakeProduct {
   id: string;
   workspaceId: string;
   shopifyStoreId: string;
+  title: string;
+  featuredImageUrl: string | null;
+  variants: FakeVariant[];
 }
 interface FakeFunnel {
   id: string;
@@ -52,7 +62,12 @@ let products: FakeProduct[] = [];
 let funnels: FakeFunnel[] = [];
 let versions: FakeVersion[] = [];
 let funnelProducts: FakeFunnelProduct[] = [];
+let snapshots: Record<string, unknown>[] = [];
 let nextId = 1;
+
+function fakeDecimal(value: number) {
+  return { toNumber: () => value };
+}
 
 function id(prefix: string) {
   return `${prefix}_${nextId++}`;
@@ -74,6 +89,15 @@ const db = {
           (p) => p.id === where.id && p.workspaceId === where.workspaceId && p.shopifyStoreId === where.shopifyStoreId
         ) ?? null
     ),
+    findUnique: vi.fn(async ({ where }: { where: { id: string } }) => {
+      const product = products.find((p) => p.id === where.id);
+      if (!product) return null;
+      const variants = [...product.variants]
+        .filter((v) => v.deletedAt === null)
+        .sort((a, b) => a.position - b.position)
+        .slice(0, 1);
+      return { ...product, variants };
+    }),
   },
   funnel: {
     findUnique: vi.fn(
@@ -166,6 +190,13 @@ const db = {
         }))
     ),
   },
+  funnelProductSnapshot: {
+    create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
+      const row = { id: id("snapshot"), ...data };
+      snapshots.push(row);
+      return row;
+    }),
+  },
   $transaction: vi.fn(async (arg: unknown) => {
     if (typeof arg === "function") return arg(db);
     return Promise.all(arg as Promise<unknown>[]);
@@ -174,6 +205,7 @@ const db = {
 
 vi.mock("@/lib/db", () => ({ prisma: db }));
 vi.mock("@/modules/audit/service", () => ({ logAudit: vi.fn(async () => undefined) }));
+vi.mock("next/cache", () => ({ revalidateTag: vi.fn() }));
 
 const { createFunnel, getOrCreateDraftVersion, updateDraftConfig, publishFunnel, archiveFunnel } =
   await import("./service");
@@ -213,10 +245,28 @@ const validConfigForTemplate = {
 beforeEach(() => {
   templates = [{ key: "tpl-1", configSchemaVersion: 1, defaultConfig: validConfigForTemplate, isActive: true }];
   stores = [{ id: "store_1", workspaceId: "ws_1" }];
-  products = [{ id: "prod_1", workspaceId: "ws_1", shopifyStoreId: "store_1" }];
+  products = [
+    {
+      id: "prod_1",
+      workspaceId: "ws_1",
+      shopifyStoreId: "store_1",
+      title: "Produto Principal",
+      featuredImageUrl: "https://cdn.example.com/prod_1.jpg",
+      variants: [
+        {
+          id: "var_1",
+          price: fakeDecimal(19.9),
+          compareAtPrice: fakeDecimal(29.9),
+          position: 0,
+          deletedAt: null,
+        },
+      ],
+    },
+  ];
   funnels = [];
   versions = [];
   funnelProducts = [];
+  snapshots = [];
   nextId = 1;
   vi.clearAllMocks();
 });
@@ -277,7 +327,7 @@ describe("createFunnel", () => {
   });
 
   it("rejeita produto de outro workspace", async () => {
-    products.push({ id: "prod_other_ws", workspaceId: "ws_2", shopifyStoreId: "store_1" });
+    products.push({ id: "prod_other_ws", workspaceId: "ws_2", shopifyStoreId: "store_1", title: "x", featuredImageUrl: null, variants: [] });
 
     await expect(
       createFunnel({
@@ -293,7 +343,7 @@ describe("createFunnel", () => {
 
   it("rejeita produto de loja Shopify diferente (mesmo workspace)", async () => {
     stores.push({ id: "store_2", workspaceId: "ws_1" });
-    products.push({ id: "prod_other_store", workspaceId: "ws_1", shopifyStoreId: "store_2" });
+    products.push({ id: "prod_other_store", workspaceId: "ws_1", shopifyStoreId: "store_2", title: "x", featuredImageUrl: null, variants: [] });
 
     await expect(
       createFunnel({
@@ -414,6 +464,22 @@ describe("publishFunnel", () => {
     expect(updatedFunnel.status).toBe("PUBLISHED");
     expect(updatedFunnel.publishedVersionId).toBe(versions[0].id);
     expect(versions[0].status).toBe("PUBLISHED");
+  });
+
+  it("cria um FunnelProductSnapshot imutável a partir do produto/variante atual", async () => {
+    const funnel = await seedFunnelWithDraft();
+
+    await publishFunnel("ws_1", funnel.id, fakeUser);
+
+    expect(snapshots).toHaveLength(1);
+    expect(snapshots[0]).toMatchObject({
+      funnelVersionId: versions[0].id,
+      productId: "prod_1",
+      title: "Produto Principal",
+      featuredImageUrl: "https://cdn.example.com/prod_1.jpg",
+      unitPrice: 19.9,
+      compareAtPrice: 29.9,
+    });
   });
 
   it("versão publicada não é mais alvo de update de config (imutável)", async () => {

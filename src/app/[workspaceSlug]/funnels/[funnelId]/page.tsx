@@ -1,10 +1,14 @@
+import Link from "next/link";
+
+import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { parseFunnelConfig } from "@/modules/funnels/config/parse";
-import { getFunnelForWorkspace } from "@/modules/funnels/service";
+import { getFunnelForWorkspace } from "@/modules/funnels/admin/service";
 import { roleHasPermission } from "@/modules/workspaces/permissions";
 import { requireWorkspaceMember } from "@/modules/workspaces/tenant";
 import { ConfigEditor } from "./config-editor";
 import { ArchiveButton, CreateDraftButton, PublishButton } from "./funnel-actions";
+import { PreviewDraftButton } from "./preview-draft-button";
 
 const STATUS_LABEL: Record<string, string> = {
   DRAFT: "Rascunho",
@@ -96,6 +100,27 @@ export default async function FunnelDetailPage({
           </CardContent>
         </Card>
       )}
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Visualizar</CardTitle>
+        </CardHeader>
+        <CardContent className="flex flex-wrap items-center gap-3">
+          {funnel.status === "PUBLISHED" && (
+            <Button type="button" variant="outline" asChild>
+              <Link href={`/f/${funnel.publicId}/${funnel.slug}`} target="_blank" rel="noopener noreferrer">
+                Ver versão publicada
+              </Link>
+            </Button>
+          )}
+          {canEdit && draftVersion && (
+            <PreviewDraftButton workspaceSlug={workspaceSlug} funnelId={funnel.id} />
+          )}
+          {funnel.status !== "PUBLISHED" && !draftVersion && (
+            <p className="text-sm text-neutral-500">Publique o funil para gerar um link público.</p>
+          )}
+        </CardContent>
+      </Card>
 
       {canEdit && funnel.status !== "ARCHIVED" && (
         <Card>

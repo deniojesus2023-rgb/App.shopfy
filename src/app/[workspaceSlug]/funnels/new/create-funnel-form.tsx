@@ -6,7 +6,7 @@ import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { createFunnelAction } from "@/modules/funnels/actions";
+import { createFunnelAction } from "@/modules/funnels/admin/actions";
 
 function slugifyClient(value: string): string {
   return value

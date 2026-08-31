@@ -32,6 +32,10 @@ const envSchema = z.object({
   // `Authorization: Bearer <CRON_SECRET>` automaticamente quando esta env
   // var está configurada no projeto. Gerar com: openssl rand -hex 32
   CRON_SECRET: z.string().min(1, "CRON_SECRET é obrigatório"),
+
+  // Assina o token de preview de rascunho de funil (/f/preview/[token]).
+  // Gerar com: openssl rand -hex 32
+  FUNNEL_PREVIEW_SECRET: z.string().min(1, "FUNNEL_PREVIEW_SECRET é obrigatório"),
 });
 
 export const env = envSchema.parse({
@@ -45,4 +49,5 @@ export const env = envSchema.parse({
   SHOPIFY_API_SECRET: process.env.SHOPIFY_API_SECRET,
   SHOPIFY_TOKEN_ENCRYPTION_KEY: process.env.SHOPIFY_TOKEN_ENCRYPTION_KEY,
   CRON_SECRET: process.env.CRON_SECRET,
+  FUNNEL_PREVIEW_SECRET: process.env.FUNNEL_PREVIEW_SECRET,
 });

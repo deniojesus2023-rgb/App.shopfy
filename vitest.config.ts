@@ -16,6 +16,7 @@ export default defineConfig({
       // 32 bytes válidos e exercitarem o round-trip de encrypt/decrypt.
       SHOPIFY_TOKEN_ENCRYPTION_KEY: "DQYDyk/ywNVI9ARyJzzZ0WsLHOIEi/9YXDeZButXFmo=",
       CRON_SECRET: "test_cron_secret",
+      FUNNEL_PREVIEW_SECRET: "test_funnel_preview_secret",
     },
   },
   resolve: {

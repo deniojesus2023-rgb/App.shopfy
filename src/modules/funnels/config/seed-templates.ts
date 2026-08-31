@@ -72,6 +72,7 @@ export const progressRewardCodDefaultConfig = funnelConfigV1Schema.parse({
         codDescription: "Pague em dinheiro quando receber.",
         onlinePaymentDescription: "Pague com cartão e ganhe desconto.",
         onlinePaymentDiscountDisplay: "5% OFF",
+        recommendedMethod: "COD",
       },
     },
     {

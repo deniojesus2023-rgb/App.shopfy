@@ -3,10 +3,13 @@
 SaaS multi-tenant para funis de vendas gamificados conectados a lojas Shopify.
 Este repositório contém a **Fase 0** (fundação, autenticação, workspaces,
 RBAC, auditoria), a **Fase 1A** (conexão de loja Shopify via OAuth + webhooks),
-a **Fase 1B** (fila persistente + importação/sincronização de catálogo) e a
-**Fase 2A** (motor de configuração de funis: draft/versão/publicação).
-Editor visual drag-and-drop, storefront público, COD funcional, gamificação,
-pagamentos, fornecedores e WhatsApp ainda não foram implementados.
+a **Fase 1B** (fila persistente + importação/sincronização de catálogo), a
+**Fase 2A** (motor de configuração de funis: draft/versão/publicação) e a
+**Fase 2B** (storefront público + runtime de funil em `/f/[publicId]/[slug]`).
+Editor visual drag-and-drop, COD funcional (criação de pedido/lead real),
+gamificação real, pagamentos, fornecedores, WhatsApp e domínio próprio ainda
+não foram implementados — o storefront público é uma experiência de
+demonstração (ver seção abaixo).
 
 ## Stack
 
@@ -216,6 +219,55 @@ Deliberadamente fora de escopo: `write_products`, `read_customers`,
   textarea de JSON validado no servidor — rotulado como temporário; o
   editor visual vem numa fase futura.
 
+## Storefront público (Fase 2B)
+
+- **URL**: `/f/[publicId]/[slug]`. `publicId` (`Funnel.publicId`, aleatório,
+  `crypto.randomBytes`) é o identificador de resolução real; `slug` é
+  cosmético — se não bater com o slug atual do funil, a página redireciona
+  para a URL canônica. Nunca usamos o slug interno (único só por workspace)
+  como identificador público global.
+- **Nunca serve DRAFT**: `resolvePublicFunnel` (`modules/funnels/runtime/resolve.ts`)
+  só resolve quando `Funnel.status = PUBLISHED` **e** a versão referenciada
+  por `publishedVersionId` também está `PUBLISHED` — checagem redundante
+  deliberada. Qualquer inconsistência (config corrompido, snapshot
+  ausente, versão errada) retorna `null` e a rota responde 404 — falha
+  fechada, nunca vaza detalhe interno.
+- **Snapshot do produto**: `FunnelProductSnapshot`, criado na publicação a
+  partir do `FunnelProduct(PRIMARY)` + sua primeira variante — título,
+  imagem, preço unitário e compare-at congelados. O storefront público
+  nunca lê `Product`/`ProductVariant` ao vivo, então uma ressincronização
+  do catálogo não muda a aparência de um funil já publicado. Preço de cada
+  oferta (`OFFER` step) é `unitPrice × quantity`
+  (`modules/funnels/runtime/pricing.ts`) — mecanismo simples e explícito,
+  nunca inventado no frontend.
+- **Runtime**: `FunnelRuntime` (client) roda um reducer puro
+  (`modules/funnels/runtime/state.ts`) sobre a lista de etapas habilitadas
+  do config. Navegação é controlada — `GO_TO_STEP` só aceita a etapa atual
+  ou uma já completada, nunca pula à frente. Sessão fica em
+  `sessionStorage` (`funnel_session:<funnelId>`), restaurada só se
+  `funnelVersionId` bater com a versão publicada atual; **nenhum dado do
+  formulário COD entra nesse estado** — vive só na memória local do
+  react-hook-form, descartado ao avançar.
+- **Nada comercial real nesta fase**: o formulário COD não faz nenhuma
+  chamada de rede (simula um `await` curto e avança); a tela `SUCCESS`
+  mostra explicitamente "Modo de demostración" / "No se ha creado ningún
+  pedido real." — isso será removido quando o COD Engine real chegar
+  (fase futura).
+- **Preview de rascunho**: token HMAC assinado (`FUNNEL_PREVIEW_SECRET`,
+  15 min de validade, sem persistência em banco) — `/f/preview/[token]`.
+  Só quem tem `funnels:edit` consegue gerar o link; nunca é possível
+  acessar um rascunho por ID previsível. A versão **publicada** não
+  precisa de token — "Ver versão publicada" na página do funil só aponta
+  para a própria URL pública.
+- **Cache**: `unstable_cache` por `publicId`, tag `funnel-public:<publicId>`
+  (mais um `revalidate: 300` de segurança). `publishFunnel` e
+  `archiveFunnel` chamam `revalidateTag` — é isso que faz uma nova versão
+  publicada (ou um arquivamento) começar a valer imediatamente, sem
+  esperar o TTL. Preview nunca passa por essa camada.
+- **CSP**: aplicada via `middleware.ts` só nas rotas `/f/*` — pragmática
+  (sem nonce por request), ponto de partida documentado, não blindagem
+  completa.
+
 ## Testes
 
 ```bash
@@ -233,5 +285,14 @@ local, paginação do full sync, webhook `products/update`/`products/delete`
 completa (PRODUCT/SUCCESS únicos, COD_FORM↔PAYMENT_CHOICE, UPSELL↔FunnelProduct,
 produto cross-workspace/cross-loja rejeitado), criação de funil, optimistic
 concurrency (conflito de revision), publicação (imutabilidade da versão
-publicada, supersede, criação automática de v2 draft), slug e RBAC. A Shopify
-é sempre mockada — nenhum teste faz chamada real.
+publicada, supersede, criação automática de v2 draft), slug e RBAC. Da Fase
+2B: resolução pública (só PUBLISHED, nunca DRAFT/ARCHIVED/versão errada,
+falha fechada em config inválido ou snapshot ausente), resolução por
+`publicId`, `FunnelProductSnapshot` criado na publicação, reducer do
+runtime (navegação, `GO_TO_STEP` nunca pula à frente, seleção de
+oferta/pagamento, restore de sessão), sessão nunca contém PII, preview
+(assinatura, adulteração, expiração), CSS variables de tema, `StepRenderer`
+para os 7 tipos e validação visual do formulário COD (react-hook-form +
+zod), com testes de componente em jsdom para os pontos de acessibilidade
+viáveis nesta fase (roles, labels, `aria-live`). A Shopify é sempre mockada
+— nenhum teste faz chamada real.

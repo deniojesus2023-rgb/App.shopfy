@@ -1,7 +1,7 @@
 import Link from "next/link";
 
 import { Button } from "@/components/ui/button";
-import { listFunnels } from "@/modules/funnels/service";
+import { listFunnels } from "@/modules/funnels/admin/service";
 import { roleHasPermission } from "@/modules/workspaces/permissions";
 import { requireWorkspaceMember } from "@/modules/workspaces/tenant";
 
