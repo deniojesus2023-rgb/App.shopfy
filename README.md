@@ -4,12 +4,13 @@ SaaS multi-tenant para funis de vendas gamificados conectados a lojas Shopify.
 Este repositório contém a **Fase 0** (fundação, autenticação, workspaces,
 RBAC, auditoria), a **Fase 1A** (conexão de loja Shopify via OAuth + webhooks),
 a **Fase 1B** (fila persistente + importação/sincronização de catálogo), a
-**Fase 2A** (motor de configuração de funis: draft/versão/publicação) e a
-**Fase 2B** (storefront público + runtime de funil em `/f/[publicId]/[slug]`).
-Editor visual drag-and-drop, COD funcional (criação de pedido/lead real),
-gamificação real, pagamentos, fornecedores, WhatsApp e domínio próprio ainda
-não foram implementados — o storefront público é uma experiência de
-demonstração (ver seção abaixo).
+**Fase 2A** (motor de configuração de funis: draft/versão/publicação), a
+**Fase 2B** (storefront público + runtime de funil em `/f/[publicId]/[slug]`),
+a **Fase 2C** (Funnel Builder MVP — editor visual) e a **Fase 3** (COD Engine
++ Order Engine + criação de pedido na Shopify — ver seção própria abaixo).
+Pagamento online real, fornecedores/dropshipping, gamificação real, WhatsApp,
+recuperação de carrinho, domínio próprio, antifraude sofisticado e order
+editing de upsell ainda não foram implementados.
 
 ## Stack
 
@@ -247,11 +248,10 @@ Deliberadamente fora de escopo: `write_products`, `read_customers`,
   `funnelVersionId` bater com a versão publicada atual; **nenhum dado do
   formulário COD entra nesse estado** — vive só na memória local do
   react-hook-form, descartado ao avançar.
-- **Nada comercial real nesta fase**: o formulário COD não faz nenhuma
-  chamada de rede (simula um `await` curto e avança); a tela `SUCCESS`
-  mostra explicitamente "Modo de demostración" / "No se ha creado ningún
-  pedido real." — isso será removido quando o COD Engine real chegar
-  (fase futura).
+- **COD real a partir da Fase 3**: o formulário COD chama
+  `POST /api/storefront/orders` de verdade — ver seção própria abaixo. A
+  tela `SUCCESS` só afirma que o pedido existe depois que o Order local foi
+  criado (nunca antes, nunca inventa número de pedido).
 - **Preview de rascunho**: token HMAC assinado (`FUNNEL_PREVIEW_SECRET`,
   15 min de validade, sem persistência em banco) — `/f/preview/[token]`.
   Só quem tem `funnels:edit` consegue gerar o link; nunca é possível
@@ -331,6 +331,104 @@ Deliberadamente fora de escopo: `write_products`, `read_customers`,
   (Loja → Produto → Plantilla → Nome) que, ao concluir, abre o builder do
   funil recém-criado diretamente — não mais a página de resumo.
 
+## COD Engine + Order Engine + Shopify Order Creation (Fase 3)
+
+Primeira fase transacional do storefront: o `COD_FORM` deixa de ser
+demonstração e passa a criar um pedido real. **Nossa aplicação é a
+autoridade inicial da venda — a Shopify é downstream.** Uma instabilidade
+temporária da Shopify nunca faz o cliente perder o pedido.
+
+> ⚠️ **Aviso sobre `orderCreate`**: o ambiente onde esta fase foi
+> desenvolvida bloqueia egress para `shopify.dev`, então o shape da mutação
+> em `modules/shopify/orders.ts` não pôde ser reconferido contra a
+> documentação ao vivo — é a melhor reconstrução por conhecimento treinado
+> da Admin GraphQL API pinned (`SHOPIFY_API_VERSION`, `modules/shopify/client.ts`).
+> **Valide contra a doc oficial num dev store antes de setar
+> `SHOPIFY_ORDER_SYNC_ENABLED=true` em produção.**
+
+- **Pedido local primeiro, Shopify depois**: `submitCheckout`
+  (`modules/orders/service.ts`) roda inteiramente numa `prisma.$transaction`
+  — cria `CodLead` + `Order` + `OrderItem` + `OrderStatusHistory` + enfileira
+  o job `SHOPIFY_ORDER_CREATE` (via `enqueueJobInTx`, mesma conexão
+  Postgres) — e só depois retorna a confirmação ao cliente. Nunca existe
+  "Order criado, job perdido": ou tudo commita, ou nada.
+- **PII só em `CodLead`**: `Order`/`OrderItem`/`OrderStatusHistory` nunca
+  carregam nome/telefone/endereço. O payload do job é `{ orderId }` —o
+  worker carrega o `CodLead` do banco quando precisa. `redactOrderFields`
+  (`modules/shared/redact.ts`) é a allowlist usada por qualquer log/erro
+  relacionado a pedido.
+- **`OrderStatus` × `ShopifySyncStatus`**: dois eixos independentes.
+  `OrderStatus` (PENDING/CONFIRMED/CANCELLED/FULFILLED/DELIVERED/REFUSED) é
+  a verdade comercial — nunca setado pelo worker Shopify, exceto
+  cancelamento/fulfillment reconciliados via webhook. `ShopifySyncStatus`
+  (PENDING/SYNCING/SYNCED/FAILED/REAUTH_REQUIRED) é só o estado da
+  integração — `Order.status = PENDING` **nunca** significa que a
+  sincronização falhou.
+- **Servidor é a única autoridade de preço**: `POST /api/storefront/orders`
+  (`modules/orders/service.ts`) resolve `Funnel PUBLISHED` → `FunnelVersion`
+  elegível → `parseFunnelConfig` → `FunnelProductSnapshot` → valida
+  offer/quantity/COD/campos obrigatórios → `calculateOrderQuote()`
+  (`modules/orders/pricing.ts`, V1 = `unitPrice × quantity`, sem desconto/
+  frete, mas já é o único ponto de cálculo — pronto para uma Pricing Engine
+  futura). O client nunca envia preço/total/discount/moeda; enviar
+  `selectedQuantity` é ignorado quando há etapa `OFFER` — a quantidade real
+  vem sempre da oferta configurada no servidor.
+- **Idempotência local**: `checkoutAttemptId` (UUID gerado 1x no runtime,
+  não é PII, vive em `sessionStorage`) deriva `Order.idempotencyKey`
+  (`UNIQUE`). Duplo clique ou reenvio com o mesmo attempt sempre retorna o
+  mesmo Order — nunca cria um segundo, inclusive numa corrida real (dois
+  `POST`s simultâneos: a constraint UNIQUE decide, o perdedor recebe o
+  Order do vencedor via `P2002`).
+- **Version race**: `FunnelVersion.supersededAt` é setado quando o lojista
+  publica uma versão nova. `isVersionEligibleForCheckout`
+  (`modules/orders/version-window.ts`) aceita a versão `PUBLISHED` atual OU
+  uma `SUPERSEDED` há menos de 20 minutos (`VERSION_RACE_GRACE_MS`) — nunca
+  DRAFT/ARCHIVED, nunca uma versão antiga vendável indefinidamente.
+- **Dinheiro**: `Decimal(12,2)` no banco (mesmo padrão de
+  `ProductVariant.price`), `roundMoney`/`formatMoney`
+  (`modules/shared/money.ts`) em memória — nunca `unitPrice * quantity`
+  solto fora de `calculateOrderQuote`. Moeda vem de `ShopifyStore.currency`
+  (lida de `shop.currencyCode` na conexão OAuth), com fallback `"COP"` —
+  primeiro mercado sem travar a arquitetura a um único país.
+- **`SHOPIFY_ORDER_CREATE` (job)**: claim → já sincronizado? completa
+  idempotente → `SHOPIFY_ORDER_SYNC_ENABLED=false`? no-op controlado (nunca
+  chama a Shopify em dev/test por padrão) → loja desconectada/token
+  inválido → `REAUTH_REQUIRED` (Order e loja), não-retryable → busca por
+  reconciliação (`findShopifyOrderByInternalTag`, tag
+  `internal_order_<id>`, sem `:`) antes de criar → `createShopifyOrder`
+  (`modules/shopify/orders.ts`) com **custom line items** (preço exato do
+  nosso quote, nunca o preço vivo do Product) e `financialStatus: PENDING`
+  sempre (nunca `PAID` — é COD). `userErrors` → `FAILED`, não-retryable.
+  Throttle/timeout/5xx sobem e a fila retenta com backoff; se as tentativas
+  se esgotarem, o cron marca `shopifySyncStatus = FAILED` explicitamente
+  (nunca fica preso em SYNCING para sempre).
+- **Idempotência externa (Shopify)**: não há garantia oficial de
+  idempotency-key confirmada para `orderCreate` (não pude reconferir a
+  doc). Mitigação: toda ordem leva a tag `internal_order_<id>`; o worker
+  busca por ela antes de criar — cobre o caso "Shopify criou, resposta
+  caiu, worker retentou". É best-effort, não uma garantia formal.
+- **Webhook reconciliation**: `orders/create` distingue pedido nosso (tag
+  `internal_order_<id>` presente) de pedido criado direto na Shopify —
+  este último nunca é importado, só marcado como evento externo conhecido.
+  `orders/updated` fica travado em cancelamento e fulfillment, sempre
+  gerando `OrderStatusHistory(source: SHOPIFY)`.
+- **Anti-abuse básico**: `checkRateLimit` (já usado pelo endpoint de
+  webhook) aplicado por IP+funil e por IP global; limite de corpo (8KB);
+  honeypot oculto (preenchido ⇒ erro genérico, nunca denuncia detecção).
+  Sem CAPTCHA nesta fase.
+- **Dev/test seguro por padrão**: `SHOPIFY_ORDER_SYNC_ENABLED` (env var,
+  default `"false"`) — sem ele, o worker nunca chama a Shopify de verdade,
+  mesmo com o resto do fluxo rodando normalmente. `npm test` nunca cria
+  pedido real (Shopify sempre mockada).
+- **Admin**: `/[workspaceSlug]/orders` (lista, filtro por status, busca por
+  `orderNumber`) e `/[workspaceSlug]/orders/[orderId]` (detalhe: dados do
+  pedido, itens, cliente/endereço, histórico, integração Shopify) —
+  tenant-scoped por `modules/orders/admin/service.ts`. Permissões novas:
+  `orders:view` (todos os papéis) e `orders:manage` (OWNER/ADMIN).
+- **Upsell continua não-transacional**: o `Order` já foi criado antes do
+  `UPSELL` no fluxo `SUCCESS → UPSELL` — esta fase não edita o Order real
+  a partir da decisão de upsell (fase própria futura).
+
 ## Testes
 
 ```bash
@@ -379,3 +477,28 @@ Os testes de componente (`*.test.tsx`, ambiente jsdom) e os de lógica pura
 `vitest.config.ts` inclui as duas extensões e registra o `cleanup()` do
 Testing Library em `afterEach` (`src/test/setup-jsdom.ts`), já que
 `test.globals` fica desligado neste projeto.
+
+Da Fase 3: `calculateOrderQuote` (V1, arredondamento de centavos),
+`isVersionEligibleForCheckout` (PUBLISHED, SUPERSEDED dentro/fora da
+janela, DRAFT sempre rejeitado, funil errado rejeitado), `submitCheckout`
+de ponta a ponta (funil inexistente/DRAFT/ARCHIVED rejeitado, versão
+inelegível rejeitada, COD desabilitado rejeitado, ONLINE rejeitado, oferta
+inválida rejeitada, `selectedQuantity` do client ignorado, campo COD
+obrigatório exigido mesmo se o client omitir, idempotência por
+`checkoutAttemptId` — mesmo attempt nunca duplica, attempt diferente cria
+Order separado, corrida real via `P2002` nunca duplica —, transação
+atômica CodLead+Order+OrderItem+OrderStatusHistory+BackgroundJob, job
+minimalista sem PII, resposta pública sem IDs internos), o job
+`SHOPIFY_ORDER_CREATE` (idempotente, respeita `SHOPIFY_ORDER_SYNC_ENABLED
+=false`, reconciliação por tag antes de criar, `userErrors` não-retryable,
+`ShopifyAuthError` → `REAUTH_REQUIRED` não-retryable, throttle sobe para
+retry da fila, loja desconectada falha sem tentar rede),
+`createShopifyOrder`/`findShopifyOrderByInternalTag` (nunca `PAID`, custom
+line items com o preço exato do quote, tag interna sempre presente,
+`userErrors` retornado em vez de lançar), `reconcileOrderCreatedWebhook`/
+`reconcileOrderUpdatedWebhook` (pedido nosso vs. externo nunca duplicado,
+cancelamento/fulfillment geram `OrderStatusHistory(source: SHOPIFY)`),
+isolamento de tenant do admin de pedidos, `enqueueJobInTx` aceitando um
+`tx` de transação (não só o `prisma` singleton), `redactOrderFields`
+(allowlist, PII nunca escapa) e RBAC `orders:view`/`orders:manage`. Toda
+chamada à Shopify é sempre mockada — nenhum teste cria pedido real.

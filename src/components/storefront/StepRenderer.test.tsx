@@ -42,6 +42,7 @@ const baseState = createInitialRuntimeState({
   funnelVersionId: "v",
   steps: [],
   initialRewardProgress: 40,
+  checkoutAttemptId: "attempt_1",
 });
 
 function renderStep(step: FunnelStep) {
@@ -54,6 +55,8 @@ function renderStep(step: FunnelStep) {
       upsellProduct={null}
       hasNextStep={false}
       callbacks={noopCallbacks}
+      funnelPublicId="pub1"
+      isPreview={false}
     />
   );
 }
@@ -137,7 +140,7 @@ describe("StepRenderer — despacha os 7 tipos de etapa", () => {
     expect(screen.getByText("Confirmar pedido")).toBeInTheDocument();
   });
 
-  it("SUCCESS renderiza o aviso de modo demonstração", () => {
+  it("SUCCESS sem pedido local ainda não afirma que o pedido foi confirmado", () => {
     renderStep({
       id: "s",
       type: "SUCCESS",
@@ -146,8 +149,10 @@ describe("StepRenderer — despacha os 7 tipos de etapa", () => {
       config: { title: "Pedido confirmado!", showOrderNumber: true, showRewardProgress: false },
     });
     expect(screen.getByText("Pedido confirmado!")).toBeInTheDocument();
-    expect(screen.getByText("Modo de demostración")).toBeInTheDocument();
-    expect(screen.getByText("No se ha creado ningún pedido real.")).toBeInTheDocument();
+    // Sem state.lastOrder (nenhum Order local criado ainda), nunca afirma
+    // "¡Pedido confirmado!" nem mostra número de pedido inventado.
+    expect(screen.queryByText("¡Pedido confirmado!")).not.toBeInTheDocument();
+    expect(screen.queryByText(/N\.º de pedido/)).not.toBeInTheDocument();
   });
 
   it("UPSELL renderiza os dois botões de decisão", () => {

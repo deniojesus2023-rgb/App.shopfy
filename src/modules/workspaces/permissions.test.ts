@@ -32,6 +32,20 @@ describe("RBAC — funnels:*", () => {
   });
 });
 
+describe("RBAC — orders:* (Fase 3)", () => {
+  it("OWNER e ADMIN têm view e manage", () => {
+    expect(roleHasPermission("OWNER", "orders:view")).toBe(true);
+    expect(roleHasPermission("OWNER", "orders:manage")).toBe(true);
+    expect(roleHasPermission("ADMIN", "orders:view")).toBe(true);
+    expect(roleHasPermission("ADMIN", "orders:manage")).toBe(true);
+  });
+
+  it("MEMBER só tem view (nunca manage)", () => {
+    expect(roleHasPermission("MEMBER", "orders:view")).toBe(true);
+    expect(roleHasPermission("MEMBER", "orders:manage")).toBe(false);
+  });
+});
+
 describe("roleAtLeast", () => {
   it("OWNER >= ADMIN >= MEMBER", () => {
     expect(roleAtLeast("OWNER", "MEMBER")).toBe(true);

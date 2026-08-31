@@ -339,7 +339,7 @@ export async function publishFunnel(workspaceId: string, funnelId: string, user:
     if (funnel.publishedVersionId) {
       await tx.funnelVersion.update({
         where: { id: funnel.publishedVersionId },
-        data: { status: "SUPERSEDED" },
+        data: { status: "SUPERSEDED", supersededAt: new Date() },
       });
     }
 

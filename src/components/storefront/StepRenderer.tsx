@@ -1,7 +1,7 @@
 import type { FunnelStep } from "@/modules/funnels/config/steps";
 import type { FunnelTheme } from "@/modules/funnels/config/theme";
 import type { ResolvedProductSnapshot, ResolvedUpsellProduct } from "@/modules/funnels/runtime/resolve";
-import type { RuntimeState } from "@/modules/funnels/runtime/state";
+import type { OrderConfirmation, RuntimeState } from "@/modules/funnels/runtime/state";
 import { CodFormStepView } from "./steps/CodFormStepView";
 import { OfferStepView } from "./steps/OfferStepView";
 import { PaymentChoiceStepView } from "./steps/PaymentChoiceStepView";
@@ -15,7 +15,7 @@ export interface StepRendererCallbacks {
   onSelectOffer: (offerId: string, quantity: number) => void;
   onSelectPaymentMethod: (method: "COD" | "ONLINE") => void;
   onUnlockReward: () => void;
-  onCodSubmitted: () => void;
+  onCodSubmitted: (order: OrderConfirmation) => void;
   onAcceptUpsell: () => void;
   onDeclineUpsell: () => void;
 }
@@ -33,6 +33,8 @@ export function StepRenderer({
   upsellProduct,
   hasNextStep,
   callbacks,
+  funnelPublicId,
+  isPreview,
 }: {
   step: FunnelStep;
   state: RuntimeState;
@@ -41,6 +43,10 @@ export function StepRenderer({
   upsellProduct: ResolvedUpsellProduct | null;
   hasNextStep: boolean;
   callbacks: StepRendererCallbacks;
+  /** Necessário para o POST real de checkout (Fase 3) — identidade pública do funil. */
+  funnelPublicId: string;
+  /** Builder administrativo: nunca cria pedido real via CodFormStepView. */
+  isPreview: boolean;
 }) {
   switch (step.type) {
     case "PRODUCT":
@@ -78,13 +84,26 @@ export function StepRenderer({
         />
       );
     case "COD_FORM":
-      return <CodFormStepView config={step.config} theme={theme} onSubmitted={callbacks.onCodSubmitted} />;
+      return (
+        <CodFormStepView
+          config={step.config}
+          theme={theme}
+          onSubmitted={callbacks.onCodSubmitted}
+          funnelPublicId={funnelPublicId}
+          funnelVersionId={state.funnelVersionId}
+          checkoutAttemptId={state.checkoutAttemptId}
+          selectedPaymentMethod={state.selectedPaymentMethod}
+          selectedOfferId={state.selectedOfferId}
+          isPreview={isPreview}
+        />
+      );
     case "SUCCESS":
       return (
         <SuccessStepView
           config={step.config}
           theme={theme}
           hasNextStep={hasNextStep}
+          order={state.lastOrder}
           onContinue={callbacks.onContinue}
         />
       );

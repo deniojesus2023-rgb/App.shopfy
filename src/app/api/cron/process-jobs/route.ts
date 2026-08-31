@@ -5,7 +5,7 @@ import { env } from "@/lib/env";
 import { failSyncRun } from "@/modules/catalog/sync-run";
 import { NonRetryableJobError } from "@/modules/queue/errors";
 import { claimNextJob, completeJob, failJob } from "@/modules/queue/service";
-import { shopifyFullCatalogSyncPayloadSchema } from "@/modules/queue/types";
+import { shopifyFullCatalogSyncPayloadSchema, shopifyOrderCreatePayloadSchema } from "@/modules/queue/types";
 import { dispatchJob } from "@/modules/queue/worker";
 
 export const runtime = "nodejs";
@@ -25,6 +25,26 @@ async function finalizeTerminalFailure(jobId: string) {
   if (!parsed.success) return;
 
   await failSyncRun(parsed.data.syncRunId, job.lastError ?? "Job falhou após esgotar as tentativas.");
+}
+
+/**
+ * Quando a fila esgota as tentativas de SHOPIFY_ORDER_CREATE (retry por
+ * instabilidade real da Shopify, não userErrors — esses já marcam FAILED
+ * direto no handler), reflete isso no Order: nunca deixar `shopifySyncStatus`
+ * preso em SYNCING/PENDING indefinidamente sem sinalizar a falha terminal.
+ * O Order comercial (`status`) nunca é tocado aqui — venda já está feita.
+ */
+async function finalizeOrderSyncTerminalFailure(jobId: string) {
+  const job = await prisma.backgroundJob.findUnique({ where: { id: jobId } });
+  if (!job || job.status !== "FAILED" || job.type !== "SHOPIFY_ORDER_CREATE") return;
+
+  const parsed = shopifyOrderCreatePayloadSchema.safeParse(job.payload);
+  if (!parsed.success) return;
+
+  await prisma.order.updateMany({
+    where: { id: parsed.data.orderId, shopifySyncStatus: { in: ["PENDING", "SYNCING"] } },
+    data: { shopifySyncStatus: "FAILED" },
+  });
 }
 
 export async function GET(req: Request) {
@@ -51,6 +71,7 @@ export async function GET(req: Request) {
       console.error(`[jobs] job ${job.id} (${job.type}) failed`, error);
       await failJob(job.id, error, { retryable });
       await finalizeTerminalFailure(job.id);
+      await finalizeOrderSyncTerminalFailure(job.id);
     }
   }
 

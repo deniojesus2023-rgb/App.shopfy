@@ -116,6 +116,7 @@ const SHOP_INFO_QUERY = /* GraphQL */ `
       name
       myshopifyDomain
       email
+      currencyCode
       plan {
         displayName
       }
@@ -128,6 +129,7 @@ interface ShopInfoResponse {
     name: string;
     myshopifyDomain: string;
     email: string;
+    currencyCode: string;
     plan: { displayName: string } | null;
   };
 }

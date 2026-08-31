@@ -44,6 +44,8 @@ function baseState(overrides: Partial<RuntimeState> = {}): RuntimeState {
     rewardProgress: 0,
     rewardUnlocked: false,
     upsellAccepted: null,
+    checkoutAttemptId: "attempt_1",
+    lastOrder: null,
     ...overrides,
   };
 }
@@ -68,6 +70,7 @@ describe("createInitialRuntimeState", () => {
       funnelVersionId: "v1",
       steps,
       initialRewardProgress: 40,
+      checkoutAttemptId: "attempt_1",
     });
     expect(state.currentStepId).toBe("first");
     expect(state.completedStepIds).toEqual([]);
@@ -152,6 +155,12 @@ describe("runtimeReducer — seleções", () => {
   it("ACCEPT_UPSELL / DECLINE_UPSELL setam upsellAccepted", () => {
     expect(runtimeReducer(baseState(), { type: "ACCEPT_UPSELL" }).upsellAccepted).toBe(true);
     expect(runtimeReducer(baseState(), { type: "DECLINE_UPSELL" }).upsellAccepted).toBe(false);
+  });
+
+  it("ORDER_CONFIRMED guarda a confirmação do pedido (só depois de criado no servidor)", () => {
+    const order = { publicOrderId: "pub1", orderNumber: 1048, status: "PENDING", total: "89900.00", currency: "COP" };
+    const result = runtimeReducer(baseState(), { type: "ORDER_CONFIRMED", order });
+    expect(result.lastOrder).toEqual(order);
   });
 
   it("RESTORE substitui o estado inteiro", () => {

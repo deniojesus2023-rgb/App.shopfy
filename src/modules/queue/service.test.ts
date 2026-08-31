@@ -66,7 +66,7 @@ vi.mock("@/lib/db", () => ({
   },
 }));
 
-const { enqueueJob, claimNextJob, completeJob, failJob } = await import("./service");
+const { enqueueJob, enqueueJobInTx, claimNextJob, completeJob, failJob } = await import("./service");
 
 beforeEach(() => {
   jobs = [];
@@ -96,6 +96,38 @@ describe("enqueueJob", () => {
       },
     });
     expect(job.status).toBe("PENDING");
+  });
+});
+
+describe("enqueueJobInTx (Fase 3 — enqueue dentro da mesma transação Postgres do Order)", () => {
+  it("aceita qualquer client com a mesma forma de `backgroundJob.create` (ex.: um `tx` de $transaction), não só o prisma singleton", async () => {
+    const txCreateMock = vi.fn(async ({ data }: { data: unknown }) => ({ id: "job_tx_1", ...(data as object) }));
+    const fakeTx = { backgroundJob: { create: txCreateMock } };
+
+    const job = await enqueueJobInTx(fakeTx as never, {
+      type: "SHOPIFY_ORDER_CREATE",
+      workspaceId: "clabc0000000000000000001",
+      payload: { orderId: "clabc0000000000000000002" },
+    });
+
+    expect(txCreateMock).toHaveBeenCalledTimes(1);
+    expect(job).toMatchObject({ id: "job_tx_1", type: "SHOPIFY_ORDER_CREATE" });
+    // Nunca tocou o prisma singleton — a prova de que o enqueue realmente
+    // aconteceu dentro do `tx` passado, não numa conexão separada.
+    expect(jobs).toHaveLength(0);
+  });
+
+  it("valida o payload com o mesmo schema do enqueueJob normal", async () => {
+    const fakeTx = { backgroundJob: { create: vi.fn() } };
+    await expect(
+      // "not-a-cuid" só é inválido em runtime (Zod `.cuid()`) — o shape
+      // TS bate normalmente, então não há erro de tipo aqui para suprimir.
+      enqueueJobInTx(fakeTx as never, {
+        type: "SHOPIFY_ORDER_CREATE",
+        payload: { orderId: "not-a-cuid" },
+      })
+    ).rejects.toThrow();
+    expect(fakeTx.backgroundJob.create).not.toHaveBeenCalled();
   });
 });
 

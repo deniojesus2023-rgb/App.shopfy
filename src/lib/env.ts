@@ -36,6 +36,15 @@ const envSchema = z.object({
   // Assina o token de preview de rascunho de funil (/f/preview/[token]).
   // Gerar com: openssl rand -hex 32
   FUNNEL_PREVIEW_SECRET: z.string().min(1, "FUNNEL_PREVIEW_SECRET é obrigatório"),
+
+  // Interruptor explícito para o worker SHOPIFY_ORDER_CREATE realmente
+  // chamar a Shopify (Fase 3). Default "false" deliberado: nunca queremos
+  // que rodar `npm run dev`/testes locais crie um pedido real na Shopify
+  // por acidente. Produção precisa setar "true" explicitamente.
+  SHOPIFY_ORDER_SYNC_ENABLED: z
+    .enum(["true", "false"])
+    .default("false")
+    .transform((v) => v === "true"),
 });
 
 export const env = envSchema.parse({
@@ -50,4 +59,5 @@ export const env = envSchema.parse({
   SHOPIFY_TOKEN_ENCRYPTION_KEY: process.env.SHOPIFY_TOKEN_ENCRYPTION_KEY,
   CRON_SECRET: process.env.CRON_SECRET,
   FUNNEL_PREVIEW_SECRET: process.env.FUNNEL_PREVIEW_SECRET,
+  SHOPIFY_ORDER_SYNC_ENABLED: process.env.SHOPIFY_ORDER_SYNC_ENABLED,
 });

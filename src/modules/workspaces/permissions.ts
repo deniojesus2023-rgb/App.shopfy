@@ -31,7 +31,9 @@ export type WorkspacePermission =
   | "funnels:create"
   | "funnels:edit"
   | "funnels:publish"
-  | "funnels:archive";
+  | "funnels:archive"
+  | "orders:view"
+  | "orders:manage";
 
 const ROLE_PERMISSIONS: Record<WorkspaceRole, WorkspacePermission[]> = {
   OWNER: [
@@ -49,6 +51,8 @@ const ROLE_PERMISSIONS: Record<WorkspaceRole, WorkspacePermission[]> = {
     "funnels:edit",
     "funnels:publish",
     "funnels:archive",
+    "orders:view",
+    "orders:manage",
   ],
   ADMIN: [
     "workspace:manage_members",
@@ -62,8 +66,16 @@ const ROLE_PERMISSIONS: Record<WorkspaceRole, WorkspacePermission[]> = {
     "funnels:create",
     "funnels:edit",
     "funnels:publish",
+    "orders:view",
+    "orders:manage",
   ],
-  MEMBER: ["workspace:view_members", "shopify:view_stores", "shopify:view_catalog", "funnels:view"],
+  MEMBER: [
+    "workspace:view_members",
+    "shopify:view_stores",
+    "shopify:view_catalog",
+    "funnels:view",
+    "orders:view",
+  ],
 };
 
 export function roleHasPermission(

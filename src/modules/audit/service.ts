@@ -22,7 +22,11 @@ export type AuditAction =
   | "funnel.created"
   | "funnel.draft_updated"
   | "funnel.published"
-  | "funnel.archived";
+  | "funnel.archived"
+  | "order.created"
+  | "order.status_changed"
+  | "order.shopify_synced"
+  | "order.shopify_sync_failed";
 
 interface LogAuditInput {
   workspaceId: string;

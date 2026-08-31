@@ -5,6 +5,7 @@ import { z } from "zod";
 
 import { prisma } from "@/lib/db";
 import { logAudit } from "@/modules/audit/service";
+import { reconcileOrderCreatedWebhook, reconcileOrderUpdatedWebhook } from "@/modules/orders/reconciliation";
 import { enqueueJob } from "@/modules/queue/service";
 
 interface PersistWebhookEventInput {
@@ -94,8 +95,28 @@ export async function processWebhookEvent(eventId: string): Promise<void> {
     return;
   }
 
-  // Demais tópicos (orders/*, fulfillments/create): armazenados para
-  // processamento em fases futuras (Orders).
+  if (event.topic === "orders/create") {
+    await runEventHandler(event.id, async () => {
+      const outcome = await reconcileOrderCreatedWebhook(event.payload);
+      if (outcome === "external") {
+        // (B) pedido criado direto na Shopify — evento conhecido, nunca
+        // importado como um Order nosso (spec item 22). Segue para
+        // PROCESSED (não é uma falha), o outcome já documenta a decisão.
+        return;
+      }
+    });
+    return;
+  }
+
+  if (event.topic === "orders/updated") {
+    await runEventHandler(event.id, async () => {
+      await reconcileOrderUpdatedWebhook(event.payload);
+    });
+    return;
+  }
+
+  // Demais tópicos (fulfillments/create): armazenados para processamento
+  // em fases futuras.
   await prisma.shopifyWebhookEvent.update({ where: { id: event.id }, data: { status: "IGNORED" } });
 }
 

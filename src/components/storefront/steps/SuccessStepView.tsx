@@ -1,30 +1,35 @@
 "use client";
 
-import { useState } from "react";
-
 import { PrimaryButton } from "../buttons";
 import { StepHeader } from "../StepHeader";
 import { isSoftButtonStyle } from "../theme";
 import type { SuccessStepConfig } from "@/modules/funnels/config/steps";
 import type { FunnelTheme } from "@/modules/funnels/config/theme";
+import type { OrderConfirmation } from "@/modules/funnels/runtime/state";
 
-function generateDemoOrderNumber(): string {
-  return `DEMO-${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
-}
-
+/**
+ * A partir da Fase 3, esta tela só afirma que o pedido existe quando
+ * `order` veio de um Order LOCAL realmente criado (ver CodFormStepView) —
+ * nunca antes disso, e nunca "pedido enviado/despachado" (isso só acontece
+ * quando a Shopify sincroniza e o fulfillment de fato existe, fora do
+ * escopo desta fase). Sem `order` (funil sem COD_FORM habilitado, ou o
+ * consumidor chegou aqui de outro jeito), a etapa mostra só o conteúdo de
+ * config — nunca inventa um número de pedido.
+ */
 export function SuccessStepView({
   config,
   theme,
   hasNextStep,
+  order,
   onContinue,
 }: {
   config: SuccessStepConfig;
   theme: FunnelTheme;
   hasNextStep: boolean;
+  order: OrderConfirmation | null;
   onContinue: () => void;
 }) {
-  // Lazy init: gerado uma vez, estável entre re-renders deste step.
-  const [orderNumber] = useState(generateDemoOrderNumber);
+  const isPreviewOrder = order?.publicOrderId === "preview";
 
   return (
     <div className="flex flex-col gap-6 px-5 py-8 text-center">
@@ -43,17 +48,25 @@ export function SuccessStepView({
 
       <StepHeader title={config.title} subtitle={config.subtitle} />
 
-      <div
-        role="status"
-        className="rounded-[var(--storefront-radius)] border border-amber-200 bg-amber-50 p-4 text-left text-sm text-amber-900"
-      >
-        <p className="font-semibold">Modo de demostración</p>
-        <p>No se ha creado ningún pedido real.</p>
-      </div>
+      {order && !isPreviewOrder && (
+        <div
+          role="status"
+          className="rounded-[var(--storefront-radius)] border border-emerald-200 bg-emerald-50 p-4 text-left text-sm text-emerald-900"
+        >
+          <p className="font-semibold">¡Pedido confirmado!</p>
+          <p>Pagas al recibir.</p>
+        </div>
+      )}
 
-      {config.showOrderNumber && (
+      {isPreviewOrder && (
+        <p role="status" className="rounded-[var(--storefront-radius)] border border-neutral-200 bg-neutral-50 p-3 text-xs opacity-70">
+          Vista previa — no se creará ningún pedido real.
+        </p>
+      )}
+
+      {config.showOrderNumber && order && !isPreviewOrder && (
         <p className="text-sm opacity-70">
-          N.º de pedido (DEMO): <span className="font-mono font-medium">{orderNumber}</span>
+          N.º de pedido: <span className="font-mono font-medium">#{order.orderNumber}</span>
         </p>
       )}
 

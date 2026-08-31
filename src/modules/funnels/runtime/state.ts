@@ -1,5 +1,13 @@
 import type { FunnelStep } from "../config/steps";
 
+export interface OrderConfirmation {
+  publicOrderId: string;
+  orderNumber: number;
+  status: string;
+  total: string;
+  currency: string;
+}
+
 export interface RuntimeState {
   sessionId: string;
   funnelId: string;
@@ -12,6 +20,14 @@ export interface RuntimeState {
   rewardProgress: number;
   rewardUnlocked: boolean;
   upsellAccepted: boolean | null;
+  // Gerado 1x ao criar a sessão, nunca depois — o backend deriva a chave de
+  // idempotência local a partir disto (Fase 3). Não é PII: um UUID
+  // aleatório, sem relação com o cliente, seguro em sessionStorage.
+  checkoutAttemptId: string;
+  // Preenchido só depois que o Order local foi REALMENTE criado no
+  // servidor (Fase 3) — SUCCESS não pode afirmar "pedido confirmado" antes
+  // disso (spec item 16/29).
+  lastOrder: OrderConfirmation | null;
 }
 
 export type RuntimeAction =
@@ -23,6 +39,7 @@ export type RuntimeAction =
   | { type: "UNLOCK_REWARD" }
   | { type: "ACCEPT_UPSELL" }
   | { type: "DECLINE_UPSELL" }
+  | { type: "ORDER_CONFIRMED"; order: OrderConfirmation }
   // Substitui o estado inteiro por uma sessão restaurada do sessionStorage
   // (já validada pelo caller: mesma funnelVersionId). Único jeito de repor
   // seleções/etapa/progresso de uma vez sem reconstruir passo a passo.
@@ -58,6 +75,7 @@ export function createInitialRuntimeState(params: {
   funnelVersionId: string;
   steps: FunnelStep[];
   initialRewardProgress: number;
+  checkoutAttemptId: string;
 }): RuntimeState {
   const enabled = getEnabledSteps(params.steps);
   return {
@@ -72,6 +90,8 @@ export function createInitialRuntimeState(params: {
     rewardProgress: params.initialRewardProgress,
     rewardUnlocked: false,
     upsellAccepted: null,
+    checkoutAttemptId: params.checkoutAttemptId,
+    lastOrder: null,
   };
 }
 
@@ -111,6 +131,8 @@ export function runtimeReducer(state: RuntimeState, action: RuntimeAction): Runt
       return { ...state, upsellAccepted: true };
     case "DECLINE_UPSELL":
       return { ...state, upsellAccepted: false };
+    case "ORDER_CONFIRMED":
+      return { ...state, lastOrder: action.order };
     case "RESTORE":
       return action.state;
     case "JUMP":

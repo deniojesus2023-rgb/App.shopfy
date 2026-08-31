@@ -19,6 +19,8 @@ interface ConnectStoreInput {
   accessToken: string;
   scope: string;
   displayName?: string | null;
+  /** ISO 4217 de `shop.currencyCode` — fallback "COP" quando ausente (ver schema Prisma). */
+  currency?: string | null;
 }
 
 /**
@@ -40,6 +42,7 @@ export async function connectStore(input: ConnectStoreInput) {
   }
 
   const accessTokenEncrypted = encryptToken(input.accessToken);
+  const currency = input.currency ?? "COP";
 
   const store = await prisma.shopifyStore.upsert({
     where: { shopDomain: input.shopDomain },
@@ -50,6 +53,7 @@ export async function connectStore(input: ConnectStoreInput) {
       accessTokenEncrypted,
       scopes: input.scope,
       status: "CONNECTED",
+      currency,
     },
     update: {
       workspaceId: input.workspaceId,
@@ -59,6 +63,7 @@ export async function connectStore(input: ConnectStoreInput) {
       status: "CONNECTED",
       disconnectedAt: null,
       installedAt: new Date(),
+      currency,
     },
   });
 

@@ -63,6 +63,7 @@ export async function GET(req: Request) {
       accessToken,
       scope,
       displayName: shopInfo.name,
+      currency: shopInfo.currencyCode,
     });
 
     await logAudit({

@@ -28,9 +28,17 @@ let stores: FakeStoreRow[] = [];
 let nextId = 1;
 
 const enqueueJobMock = vi.fn(async () => ({}) as never);
+const reconcileOrderCreatedMock = vi.fn<() => Promise<"reconciled" | "already_synced" | "external">>(
+  async () => "external"
+);
+const reconcileOrderUpdatedMock = vi.fn<() => Promise<"updated" | "no_change" | "not_ours">>(async () => "not_ours");
 
 vi.mock("@/modules/queue/service", () => ({ enqueueJob: enqueueJobMock }));
 vi.mock("@/modules/audit/service", () => ({ logAudit: vi.fn(async () => undefined) }));
+vi.mock("@/modules/orders/reconciliation", () => ({
+  reconcileOrderCreatedWebhook: reconcileOrderCreatedMock,
+  reconcileOrderUpdatedWebhook: reconcileOrderUpdatedMock,
+}));
 
 vi.mock("@/lib/db", () => ({
   prisma: {
@@ -87,6 +95,10 @@ beforeEach(() => {
   stores = [];
   nextId = 1;
   enqueueJobMock.mockClear();
+  reconcileOrderCreatedMock.mockClear();
+  reconcileOrderCreatedMock.mockResolvedValue("external");
+  reconcileOrderUpdatedMock.mockClear();
+  reconcileOrderUpdatedMock.mockResolvedValue("not_ours");
 });
 
 describe("persistWebhookEvent (idempotência)", () => {
@@ -209,12 +221,40 @@ describe("processWebhookEvent", () => {
   });
 
   it("tópico ainda não processado nesta fase fica IGNORED", async () => {
-    const event = seedEvent({ topic: "orders/create", payload: {} });
+    const event = seedEvent({ topic: "fulfillments/create", payload: {} });
 
     await processWebhookEvent(event.id);
 
     expect(events.find((e) => e.id === event.id)!.status).toBe("IGNORED");
     expect(enqueueJobMock).not.toHaveBeenCalled();
+  });
+
+  it("orders/create reconcilia via modules/orders/reconciliation e marca PROCESSED (A ou B)", async () => {
+    reconcileOrderCreatedMock.mockResolvedValue("reconciled");
+    const event = seedEvent({ topic: "orders/create", payload: { id: 1, tags: "cod,internal_order_abc" } });
+
+    await processWebhookEvent(event.id);
+
+    expect(reconcileOrderCreatedMock).toHaveBeenCalledWith(event.payload);
+    expect(events.find((e) => e.id === event.id)!.status).toBe("PROCESSED");
+  });
+
+  it("orders/create de um pedido externo (B) nunca importa/duplica — só marca PROCESSED", async () => {
+    reconcileOrderCreatedMock.mockResolvedValue("external");
+    const event = seedEvent({ topic: "orders/create", payload: { id: 2 } });
+
+    await processWebhookEvent(event.id);
+
+    expect(events.find((e) => e.id === event.id)!.status).toBe("PROCESSED");
+  });
+
+  it("orders/updated delega a reconciliação de cancelamento/fulfillment", async () => {
+    const event = seedEvent({ topic: "orders/updated", payload: { id: 1, cancelled_at: "2026-01-01T00:00:00Z" } });
+
+    await processWebhookEvent(event.id);
+
+    expect(reconcileOrderUpdatedMock).toHaveBeenCalledWith(event.payload);
+    expect(events.find((e) => e.id === event.id)!.status).toBe("PROCESSED");
   });
 
   it("evento sem workspaceId resolvido marca FAILED em vez de enfileirar", async () => {

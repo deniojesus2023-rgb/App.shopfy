@@ -18,6 +18,16 @@ const runtimeStateSchema = z.object({
   rewardProgress: z.number(),
   rewardUnlocked: z.boolean(),
   upsellAccepted: z.boolean().nullable(),
+  checkoutAttemptId: z.string(),
+  lastOrder: z
+    .object({
+      publicOrderId: z.string(),
+      orderNumber: z.number(),
+      status: z.string(),
+      total: z.string(),
+      currency: z.string(),
+    })
+    .nullable(),
 });
 
 function storageKey(funnelId: string): string {

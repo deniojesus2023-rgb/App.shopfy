@@ -5,6 +5,7 @@ import type { BackgroundJob } from "@prisma/client";
 import { processFullCatalogSyncJob } from "@/modules/catalog/handlers/full-sync";
 import { processProductDeleteJob } from "@/modules/catalog/handlers/product-delete";
 import { processProductSyncJob } from "@/modules/catalog/handlers/product-sync";
+import { processShopifyOrderCreateJob } from "@/modules/orders/handlers/shopify-order-create";
 import { JOB_PAYLOAD_SCHEMAS, type BackgroundJobTypeName } from "./types";
 
 /**
@@ -25,6 +26,8 @@ export async function dispatchJob(job: BackgroundJob): Promise<void> {
       return processProductSyncJob(payload as never);
     case "SHOPIFY_PRODUCT_DELETE":
       return processProductDeleteJob(payload as never);
+    case "SHOPIFY_ORDER_CREATE":
+      return processShopifyOrderCreateJob(payload as never);
     default: {
       const _exhaustive: never = type;
       throw new Error(`Tipo de job desconhecido: ${_exhaustive}`);

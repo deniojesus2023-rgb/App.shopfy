@@ -34,6 +34,7 @@ export default async function WorkspaceLayout({
                 <Link href={`/${workspace.slug}`}>Dashboard</Link>
                 <Link href={`/${workspace.slug}/stores`}>Lojas</Link>
                 <Link href={`/${workspace.slug}/funnels`}>Funis</Link>
+                <Link href={`/${workspace.slug}/orders`}>Pedidos</Link>
                 <Link href={`/${workspace.slug}/members`}>Membros</Link>
               </nav>
             </div>

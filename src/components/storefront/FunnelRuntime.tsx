@@ -51,6 +51,7 @@ export function FunnelRuntime({
         funnelVersionId: resolved.version.id,
         steps: resolved.config.steps,
         initialRewardProgress: findRewardInitialProgress(resolved),
+        checkoutAttemptId: typeof crypto !== "undefined" ? crypto.randomUUID() : Math.random().toString(36),
       })
   );
 
@@ -99,12 +100,17 @@ export function FunnelRuntime({
           snapshot={resolved.snapshot}
           upsellProduct={resolved.upsellProduct}
           hasNextStep={hasNextStep}
+          funnelPublicId={resolved.funnel.publicId}
+          isPreview={resolved.isPreview}
           callbacks={{
             onContinue: () => dispatch({ type: "NEXT_STEP", steps: resolved.config.steps }),
             onSelectOffer: (offerId, quantity) => dispatch({ type: "SELECT_OFFER", offerId, quantity }),
             onSelectPaymentMethod: (method) => dispatch({ type: "SELECT_PAYMENT_METHOD", method }),
             onUnlockReward: () => dispatch({ type: "UNLOCK_REWARD" }),
-            onCodSubmitted: () => dispatch({ type: "NEXT_STEP", steps: resolved.config.steps }),
+            onCodSubmitted: (order) => {
+              dispatch({ type: "ORDER_CONFIRMED", order });
+              dispatch({ type: "NEXT_STEP", steps: resolved.config.steps });
+            },
             onAcceptUpsell: () => {
               dispatch({ type: "ACCEPT_UPSELL" });
               if (!disableSessionPersistence) clearRuntimeSession(resolved.funnel.id);

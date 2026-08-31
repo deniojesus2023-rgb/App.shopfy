@@ -32,6 +32,8 @@ function baseState(overrides: Partial<RuntimeState> = {}): RuntimeState {
     rewardProgress: 0,
     rewardUnlocked: false,
     upsellAccepted: null,
+    checkoutAttemptId: "attempt_1",
+    lastOrder: null,
     ...overrides,
   };
 }
@@ -94,6 +96,8 @@ describe("readRuntimeSession / writeRuntimeSession", () => {
       "rewardProgress",
       "rewardUnlocked",
       "upsellAccepted",
+      "checkoutAttemptId",
+      "lastOrder",
     ]);
     for (const key of Object.keys(parsed)) {
       expect(allowedKeys.has(key)).toBe(true);

@@ -29,13 +29,23 @@ interface EnqueueInput<T extends BackgroundJobTypeName> {
   maxAttempts?: number;
 }
 
-export async function enqueueJob<T extends BackgroundJobTypeName>(
+// Client mínimo aceito por `enqueueJobInTx`: tanto o `prisma` singleton
+// quanto o `tx` de dentro de um `prisma.$transaction(async (tx) => ...)`
+// satisfazem isto — é o que permite o Order Engine (Fase 3) enfileirar
+// SHOPIFY_ORDER_CREATE na MESMA transação que cria o Order, sem duplicar
+// esta função nem depender de um outbox separado.
+interface JobCreateClient {
+  backgroundJob: { create: (args: { data: Prisma.BackgroundJobUncheckedCreateInput }) => Promise<BackgroundJob> };
+}
+
+export async function enqueueJobInTx<T extends BackgroundJobTypeName>(
+  client: JobCreateClient,
   input: EnqueueInput<T>
 ): Promise<BackgroundJob> {
   const schema = JOB_PAYLOAD_SCHEMAS[input.type];
   const payload = schema.parse(input.payload);
 
-  return prisma.backgroundJob.create({
+  return client.backgroundJob.create({
     data: {
       type: input.type as BackgroundJobType,
       payload: payload as Prisma.InputJsonValue,
@@ -44,6 +54,12 @@ export async function enqueueJob<T extends BackgroundJobTypeName>(
       maxAttempts: input.maxAttempts ?? 5,
     },
   });
+}
+
+export async function enqueueJob<T extends BackgroundJobTypeName>(
+  input: EnqueueInput<T>
+): Promise<BackgroundJob> {
+  return enqueueJobInTx(prisma, input);
 }
 
 /**
