@@ -848,16 +848,37 @@ o preço que **nós** calculamos.
   (`Order` sem `CodLead` → `NonRetryableJobError`), já que o fluxo ONLINE
   nunca passa por ele. `Order.codLeadId` virou opcional (`String? @unique`).
 
+### Escopo OAuth adicional (Fase 4D.1)
+
+`draftOrderCreate` exige o scope `write_draft_orders`, que agora está em
+`SHOPIFY_SCOPES` (`src/modules/shopify/scopes.ts`) — só o `write_*`, sem
+`read_draft_orders` separado, porque um `write_*` já inclui leitura do
+mesmo recurso e é só o que `findDraftOrdersByIdentity` precisa. Como é
+scope novo, **qualquer loja já conectada precisa reautorizar o app**: um
+access token emitido antes desta mudança não ganha a permissão nova
+retroativamente. Não há reautorização automática — é preciso repetir o
+fluxo OAuth (reinstalar o app na loja) antes de testar o checkout ONLINE.
+
+### Dívida técnica conhecida — workflow de banco
+
+O projeto usa `prisma db push` desde a Fase 0, sem `prisma/migrations`
+versionado. Isso é aceitável em desenvolvimento, mas **antes do deploy de
+produção** é preciso criar um baseline Prisma e migrar o projeto para
+migrations versionadas (`prisma migrate dev`/`deploy`) — `db push` não
+audita histórico de schema nem é seguro para aplicar automaticamente em
+produção. Registrado aqui deliberadamente sem ser resolvido nesta fase.
+
 ### Checklist de validação manual em development store
 
 A flag fica `false` até este checklist passar. **Não habilitar em
 produção antes disso.** Rode numa *development store* da Shopify, com um
 funil publicado que tenha um método ONLINE/`SHOPIFY_CHECKOUT` habilitado.
 
-Preparação: `npx prisma db push` (tabela `OnlineCheckoutAttempt` e
-`Order.codLeadId` nullable), `SHOPIFY_ONLINE_CHECKOUT_ENABLED="true"`,
-loja com status `CONNECTED`, webhook `orders/create` registrado e
-apontando para a app.
+Preparação: reautorizar a loja (ver acima), `npx prisma db push` (tabela
+`OnlineCheckoutAttempt` e `Order.codLeadId` nullable — confirmar antes que
+não é uma operação destrutiva no banco de desenvolvimento),
+`SHOPIFY_ONLINE_CHECKOUT_ENABLED="true"`, loja com status `CONNECTED`,
+webhook `orders/create` registrado e apontando para a app.
 
 | # | O que confirmar | Como | Esperado |
 |---|---|---|---|
