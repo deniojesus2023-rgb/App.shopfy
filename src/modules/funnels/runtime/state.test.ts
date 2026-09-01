@@ -45,8 +45,6 @@ function baseState(overrides: Partial<RuntimeState> = {}): RuntimeState {
     selectedOfferId: null,
     selectedQuantity: null,
     selectedPaymentMethod: null,
-    rewardProgress: 0,
-    rewardUnlocked: false,
     upsellAccepted: null,
     checkoutAttemptId: "attempt_1",
     lastOrder: null,
@@ -73,13 +71,10 @@ describe("createInitialRuntimeState", () => {
       funnelId: "f1",
       funnelVersionId: "v1",
       steps,
-      initialRewardProgress: 40,
       checkoutAttemptId: "attempt_1",
     });
     expect(state.currentStepId).toBe("first");
     expect(state.completedStepIds).toEqual([]);
-    expect(state.rewardProgress).toBe(40);
-    expect(state.rewardUnlocked).toBe(false);
   });
 });
 
@@ -150,12 +145,6 @@ describe("runtimeReducer — seleções", () => {
     expect(result.selectedPaymentMethod).toBe("COD");
   });
 
-  it("UNLOCK_REWARD leva o progresso a 100 e marca desbloqueado", () => {
-    const result = runtimeReducer(baseState({ rewardProgress: 60 }), { type: "UNLOCK_REWARD" });
-    expect(result.rewardProgress).toBe(100);
-    expect(result.rewardUnlocked).toBe(true);
-  });
-
   it("ACCEPT_UPSELL / DECLINE_UPSELL setam upsellAccepted", () => {
     expect(runtimeReducer(baseState(), { type: "ACCEPT_UPSELL" }).upsellAccepted).toBe(true);
     expect(runtimeReducer(baseState(), { type: "DECLINE_UPSELL" }).upsellAccepted).toBe(false);
@@ -168,7 +157,7 @@ describe("runtimeReducer — seleções", () => {
   });
 
   it("RESTORE substitui o estado inteiro", () => {
-    const restored = baseState({ currentStepId: "z", rewardProgress: 77 });
+    const restored = baseState({ currentStepId: "z", selectedOfferId: "o1" });
     const result = runtimeReducer(baseState(), { type: "RESTORE", state: restored });
     expect(result).toEqual(restored);
   });

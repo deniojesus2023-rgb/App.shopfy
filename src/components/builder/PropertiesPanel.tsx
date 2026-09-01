@@ -55,11 +55,16 @@ export function PropertiesPanel({
     dispatch({ type: "UPDATE_STEP", stepId: step!.id, step: { ...step, config } as FunnelStep });
   }
 
+  const offerStep = state.draftConfig.steps.find((s) => s.type === "OFFER" && s.enabled);
+  const offers = offerStep?.type === "OFFER" ? offerStep.config.offers : null;
+
   return (
     <div>
       <h2 className="mb-4 text-sm font-semibold text-neutral-500">{STEP_TYPE_LABELS[step.type]}</h2>
       {step.type === "PRODUCT" && <ProductStepEditor config={step.config} onChange={onChangeConfig} />}
-      {step.type === "REWARD" && <RewardStepEditor config={step.config} onChange={onChangeConfig} />}
+      {step.type === "REWARD" && (
+        <RewardStepEditor config={step.config} offers={offers} unitPrice={unitPrice} currency={currency} onChange={onChangeConfig} />
+      )}
       {step.type === "OFFER" && (
         <OfferStepEditor config={step.config} unitPrice={unitPrice} currency={currency} onChange={onChangeConfig} />
       )}

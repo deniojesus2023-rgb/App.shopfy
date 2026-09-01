@@ -1,11 +1,11 @@
-import { funnelConfigV2Schema } from "./schema";
+import { funnelConfigV3Schema } from "./schema";
 
 // Config inicial do template seed — validado pelo mesmo schema Zod usado
 // para config de usuário, para nunca divergir do que a aplicação aceitaria.
 // Separado de prisma/seed.ts para poder ser importado em testes sem
 // disparar a execução do script de seed (que toca o banco).
-export const progressRewardCodDefaultConfig = funnelConfigV2Schema.parse({
-  schemaVersion: 2,
+export const progressRewardCodDefaultConfig = funnelConfigV3Schema.parse({
+  schemaVersion: 3,
   theme: {
     primaryColor: "#111827",
     backgroundColor: "#FFFFFF",
@@ -39,11 +39,26 @@ export const progressRewardCodDefaultConfig = funnelConfigV2Schema.parse({
       order: 1,
       config: {
         title: "VOCÊ TEM UM BENEFÍCIO!",
-        subtitle: "Continue para desbloquear",
-        rewardDisplayType: "PERCENTAGE",
-        displayValue: "15%",
-        initialProgress: 85,
-        ctaText: "DESBLOQUEAR",
+        subtitle: "Elige tu oferta para avanzar",
+        // Progresso REAL, atrelado à etapa OFFER abaixo (ids "qty-1"/"qty-2"/
+        // "qty-3"): sem seleção, 85% (marco de fluxo); ao escolher, o
+        // progresso reflete a oferta escolhida — nunca um número solto.
+        progressRule: {
+          type: "OFFER_SELECTION_PROGRESS",
+          baseProgress: 85,
+          offerProgress: { "qty-1": 90, "qty-2": 95, "qty-3": 100 },
+        },
+        reward: { type: "MESSAGE_ONLY", message: "Tu beneficio está listo." },
+        milestones: [
+          { progress: 85, label: "Beneficio activado" },
+          { progress: 95, label: "Casi listo" },
+          { progress: 100, label: "Todo listo para finalizar" },
+        ],
+        showProgressBar: true,
+        showRemainingValue: false,
+        showCurrentValue: false,
+        ctaText: "CONTINUAR",
+        finalMessage: "¡Recompensa desbloqueada!",
       },
     },
     {
@@ -143,7 +158,7 @@ export const PROGRESS_REWARD_COD_TEMPLATE = {
   key: "progress-reward-cod-v1",
   name: "Progress Reward COD",
   description: "Funil com barra de progresso/recompensa, ofertas por quantidade e checkout COD.",
-  configSchemaVersion: 2,
+  configSchemaVersion: 3,
   defaultConfig: progressRewardCodDefaultConfig,
   isActive: true,
 } as const;

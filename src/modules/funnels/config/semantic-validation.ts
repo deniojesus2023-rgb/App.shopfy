@@ -1,3 +1,4 @@
+import { UNSUPPORTED_PRICING_REWARD_TYPES } from "./gamification";
 import type { FunnelConfig } from "./schema";
 import type { FunnelStep } from "./steps";
 
@@ -98,13 +99,54 @@ export function validateFunnelSemantics(
     }
   }
 
+  const offerSteps = enabledStepsOfType(steps, "OFFER");
+  const offerIds = new Set(offerSteps.flatMap((s) => s.config.offers.map((o) => o.id)));
+
   for (const rewardStep of enabledStepsOfType(steps, "REWARD")) {
-    const progress = rewardStep.config.initialProgress;
-    if (progress < 0 || progress > 100) {
+    const { progressRule, reward, milestones } = rewardStep.config;
+
+    // PRICING_REWARD (FIXED_DISCOUNT/PERCENT_DISCOUNT): fail closed — não
+    // há integração com calculateOrderQuote() ainda nesta fase (spec item
+    // 15). Uma recompensa "econômica" que não muda Order.total de verdade
+    // é exatamente a promessa falsa que este motor existe para eliminar.
+    if ((UNSUPPORTED_PRICING_REWARD_TYPES as readonly string[]).includes(reward.type)) {
       errors.push({
-        path: `steps.${rewardStep.id}.config.initialProgress`,
-        message: "initialProgress deve estar entre 0 e 100.",
+        path: `steps.${rewardStep.id}.config.reward`,
+        message: `Tipo de recompensa "${reward.type}" ainda não é suportado (requer integração com o Pricing Engine).`,
       });
+    }
+
+    if (progressRule.type === "OFFER_SELECTION_PROGRESS") {
+      if (offerSteps.length === 0) {
+        errors.push({
+          path: `steps.${rewardStep.id}.config.progressRule`,
+          message: "OFFER_SELECTION_PROGRESS exige uma etapa OFFER habilitada.",
+        });
+      }
+      for (const offerId of Object.keys(progressRule.offerProgress)) {
+        if (!offerIds.has(offerId)) {
+          errors.push({
+            path: `steps.${rewardStep.id}.config.progressRule.offerProgress.${offerId}`,
+            message: `Oferta "${offerId}" referenciada não existe em nenhuma etapa OFFER habilitada.`,
+          });
+        }
+      }
+    }
+
+    if (progressRule.type === "VALUE_THRESHOLD" && offerSteps.length === 0) {
+      errors.push({
+        path: `steps.${rewardStep.id}.config.progressRule`,
+        message: "VALUE_THRESHOLD exige uma etapa OFFER habilitada (a economia deriva da oferta selecionada).",
+      });
+    }
+
+    for (const milestone of milestones) {
+      if (milestone.progress < 0 || milestone.progress > 100) {
+        errors.push({
+          path: `steps.${rewardStep.id}.config.milestones`,
+          message: `Milestone "${milestone.label}" com progresso fora de 0-100 (${milestone.progress}).`,
+        });
+      }
     }
   }
 

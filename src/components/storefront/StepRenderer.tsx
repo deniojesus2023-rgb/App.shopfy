@@ -1,5 +1,6 @@
 import type { FunnelStep } from "@/modules/funnels/config/steps";
 import type { FunnelTheme } from "@/modules/funnels/config/theme";
+import type { GamificationResult } from "@/modules/funnels/gamification/evaluate";
 import type { ResolvedProductSnapshot, ResolvedUpsellProduct } from "@/modules/funnels/runtime/resolve";
 import type { OrderConfirmation, RuntimeState } from "@/modules/funnels/runtime/state";
 import { CodFormStepView } from "./steps/CodFormStepView";
@@ -14,7 +15,6 @@ export interface StepRendererCallbacks {
   onContinue: () => void;
   onSelectOffer: (offerId: string, quantity: number) => void;
   onSelectPaymentMethod: (method: "COD" | "ONLINE") => void;
-  onUnlockReward: () => void;
   onCodSubmitted: (order: OrderConfirmation) => void;
   onAcceptUpsell: () => void;
   onDeclineUpsell: () => void;
@@ -32,6 +32,7 @@ export function StepRenderer({
   snapshot,
   currency,
   offerConfig,
+  gamification,
   upsellProduct,
   hasNextStep,
   callbacks,
@@ -45,6 +46,8 @@ export function StepRenderer({
   currency: string;
   /** Etapa OFFER habilitada do funil (se houver) — alimenta o preço padrão mostrado no PRODUCT step. */
   offerConfig: Extract<FunnelStep, { type: "OFFER" }>["config"] | null;
+  /** Resultado já calculado por evaluateGamification() — nunca recomputado aqui. */
+  gamification: GamificationResult;
   upsellProduct: ResolvedUpsellProduct | null;
   hasNextStep: boolean;
   callbacks: StepRendererCallbacks;
@@ -70,9 +73,8 @@ export function StepRenderer({
         <RewardStepView
           config={step.config}
           theme={theme}
-          progress={state.rewardProgress}
-          unlocked={state.rewardUnlocked}
-          onUnlock={callbacks.onUnlockReward}
+          currency={currency}
+          result={gamification}
           onContinue={callbacks.onContinue}
         />
       );

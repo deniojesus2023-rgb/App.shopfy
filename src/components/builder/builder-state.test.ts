@@ -50,7 +50,7 @@ function offerStep(overrides: Partial<{ id: string; order: number; enabled: bool
 }
 
 function config(steps: FunnelConfig["steps"]): FunnelConfig {
-  return { schemaVersion: 2, theme, steps, settings: {} };
+  return { schemaVersion: 3, theme, steps, settings: {} };
 }
 
 describe("createBuilderState", () => {

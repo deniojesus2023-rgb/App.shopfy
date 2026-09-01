@@ -5,9 +5,21 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { FunnelStep } from "@/modules/funnels/config/steps";
 import type { FunnelTheme } from "@/modules/funnels/config/theme";
+import type { GamificationResult } from "@/modules/funnels/gamification/evaluate";
 import type { ResolvedProductSnapshot } from "@/modules/funnels/runtime/resolve";
 import { createInitialRuntimeState } from "@/modules/funnels/runtime/state";
 import { StepRenderer, type StepRendererCallbacks } from "./StepRenderer";
+
+const noRewardResult: GamificationResult = {
+  progressPercent: 40,
+  status: "IN_PROGRESS",
+  unlocked: false,
+  currentValue: null,
+  targetValue: null,
+  remainingValue: null,
+  milestone: null,
+  reward: { type: "MESSAGE_ONLY", message: "Beneficio desbloqueado." },
+};
 
 const theme: FunnelTheme = {
   primaryColor: "#111827",
@@ -30,7 +42,6 @@ const noopCallbacks: StepRendererCallbacks = {
   onContinue: vi.fn(),
   onSelectOffer: vi.fn(),
   onSelectPaymentMethod: vi.fn(),
-  onUnlockReward: vi.fn(),
   onCodSubmitted: vi.fn(),
   onAcceptUpsell: vi.fn(),
   onDeclineUpsell: vi.fn(),
@@ -41,7 +52,6 @@ const baseState = createInitialRuntimeState({
   funnelId: "f",
   funnelVersionId: "v",
   steps: [],
-  initialRewardProgress: 40,
   checkoutAttemptId: "attempt_1",
 });
 
@@ -54,6 +64,7 @@ function renderStep(step: FunnelStep) {
       snapshot={snapshot}
       currency="COP"
       offerConfig={null}
+      gamification={noRewardResult}
       upsellProduct={null}
       hasNextStep={false}
       callbacks={noopCallbacks}
@@ -75,7 +86,7 @@ describe("StepRenderer — despacha os 7 tipos de etapa", () => {
     expect(screen.getByText("Comprar agora")).toBeInTheDocument();
   });
 
-  it("REWARD renderiza RewardStepView (título + CTA de desbloqueio)", () => {
+  it("REWARD renderiza RewardStepView (título + progresso + CTA)", () => {
     renderStep({
       id: "s",
       type: "REWARD",
@@ -83,14 +94,18 @@ describe("StepRenderer — despacha os 7 tipos de etapa", () => {
       order: 0,
       config: {
         title: "Você ganhou um benefício",
-        rewardDisplayType: "GENERIC",
-        displayValue: "10%",
-        initialProgress: 40,
-        ctaText: "Desbloquear",
+        progressRule: { type: "STATIC_PROGRESS", baseProgress: 40 },
+        reward: { type: "MESSAGE_ONLY", message: "Beneficio desbloqueado." },
+        milestones: [],
+        showProgressBar: true,
+        showRemainingValue: false,
+        showCurrentValue: false,
+        ctaText: "Continuar",
+        finalMessage: "¡Recompensa desbloqueada!",
       },
     });
     expect(screen.getByText("Você ganhou um benefício")).toBeInTheDocument();
-    expect(screen.getByText("Desbloquear")).toBeInTheDocument();
+    expect(screen.getByText("Continuar")).toBeInTheDocument();
   });
 
   it("OFFER renderiza um card por oferta", () => {

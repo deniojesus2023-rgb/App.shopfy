@@ -15,8 +15,6 @@ const runtimeStateSchema = z.object({
   selectedOfferId: z.string().nullable(),
   selectedQuantity: z.number().nullable(),
   selectedPaymentMethod: z.enum(["COD", "ONLINE"]).nullable(),
-  rewardProgress: z.number(),
-  rewardUnlocked: z.boolean(),
   upsellAccepted: z.boolean().nullable(),
   checkoutAttemptId: z.string(),
   lastOrder: z

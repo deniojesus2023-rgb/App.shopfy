@@ -7,11 +7,13 @@ a **Fase 1B** (fila persistente + importação/sincronização de catálogo), a
 **Fase 2A** (motor de configuração de funis: draft/versão/publicação), a
 **Fase 2B** (storefront público + runtime de funil em `/f/[publicId]/[slug]`),
 a **Fase 2C** (Funnel Builder MVP — editor visual), a **Fase 3** (COD Engine
-+ Order Engine + criação de pedido na Shopify) e a **Fase 4A** (Pricing &
-Offer Engine — preço fixo por oferta, ver seção própria abaixo).
-Pagamento online real, fornecedores/dropshipping, gamificação real, WhatsApp,
-recuperação de carrinho, domínio próprio, antifraude sofisticado e order
-editing de upsell ainda não foram implementados.
++ Order Engine + criação de pedido na Shopify), a **Fase 4A** (Pricing &
+Offer Engine — preço fixo por oferta) e a **Fase 4B** (Gamification Engine —
+progresso e recompensa determinísticos, ver seção própria abaixo).
+Pagamento online real, fornecedores/dropshipping, WhatsApp, recuperação de
+carrinho, domínio próprio, antifraude sofisticado, order editing de upsell,
+recompensa econômica real (PRICING_REWARD) e persistência de analytics de
+gamificação ainda não foram implementados.
 
 ## Stack
 
@@ -583,6 +585,89 @@ versão publicada e usada de ponta a ponta (Builder, storefront,
   predeterminada. Moeda vem sempre de `ShopifyStore.currency` — nunca
   escolhida à mão.
 
+## Gamification Engine (Fase 4B)
+
+Os elementos de gamificação do Funnel Runtime (progresso, "benefício
+desbloqueado", "faltam X") deixam de ser texto/número digitado pelo lojista
+e passam a ser o resultado de uma regra real, avaliada por uma função pura
+compartilhada por Builder, Storefront e (futuramente) qualquer verificação
+server-side.
+
+- **Separação de conceitos**: `GamificationProgressRule` (regra configurada
+  e publicada) → `GamificationContext` (estado real da sessão: oferta
+  selecionada, pedido confirmado) → `GamificationResult` (o que é exibido).
+  Nunca se salva "85%" como verdade — salva-se a REGRA que produz esse
+  número, recalculada a cada mudança de estado.
+- **Três tipos de regra (V1, MVP)** — nenhuma DSL genérica:
+  - `STATIC_PROGRESS`: marco fixo do FLUXO (ex.: "ao chegar em REWARD,
+    85%") — nunca representa dinheiro ganho.
+  - `OFFER_SELECTION_PROGRESS`: `baseProgress` sem seleção,
+    `offerProgress[offerId]` depois de escolhida.
+  - `VALUE_THRESHOLD`: progresso deriva da ECONOMIA real da oferta
+    selecionada (`resolveOfferPrice` — Fase 4A), nunca de um valor
+    digitado. "Economia" e "crédito/saldo" são conceitos deliberadamente
+    diferentes — este motor só implementa o primeiro.
+- **`ORDER_CONFIRMED` não é uma 4ª regra selecionável** — é um override
+  incondicional em `evaluateGamification()`: sempre que
+  `context.orderConfirmed === true`, o resultado é `100% / COMPLETED /
+  unlocked: true`, **independente** da regra configurada. Isso fecha a
+  brecha de o lojista esquecer de configurar a regra certa.
+- **Progresso ≠ desbloqueio da recompensa** (correção de design pré-
+  implementação): uma regra pode chegar matematicamente a 100% ANTES do
+  checkout (ex.: oferta mapeada para 100%, ou economia que já bate a
+  meta) — isso vira o estado `READY` ("Todo listo para finalizar"), nunca
+  `COMPLETED`. `rewardUnlocked`/`unlocked` é **sempre e somente**
+  `context.orderConfirmed` (Order local realmente criado — Fase 3), nunca
+  `progressPercent >= 100`. O motor também nunca faz clamp artificial do
+  percentual para "esconder" um 100% real (ex.: forçar 99%) — a
+  distinção vive no `status`/`unlocked`, nunca em falsificar a
+  matemática. Quatro estados só: `LOCKED` (0%) / `IN_PROGRESS` (0–100%) /
+  `READY` (100%, sem pedido) / `COMPLETED` (100%, pedido confirmado).
+- **Reward model**: `DISPLAY_REWARD` (`MESSAGE_ONLY`,
+  `FREE_SHIPPING_DISPLAY` — honesto porque `shippingTotal` já é sempre 0
+  nesta fase) implementado. `PRICING_REWARD` (`FIXED_DISCOUNT`,
+  `PERCENT_DISCOUNT`) existe só no schema, preparado para quando houver
+  integração real com `calculateOrderQuote()` — a validação semântica
+  **rejeita publicar** qualquer funil que os use (fail closed, nunca uma
+  recompensa "econômica" que não muda `Order.total` de verdade).
+- **`FunnelConfigV3`**: `REWARD` evolui de shape incompatível
+  (`rewardDisplayType`/`displayValue`/`initialProgress` — texto livre sem
+  regra real) para `progressRule`/`reward`/`milestones` tipados.
+  Migração `V2→V3` registrada em `migrate.ts`: `initialProgress` vira
+  `STATIC_PROGRESS.baseProgress` (MESMO valor — comportamento visual
+  preservado), mas `rewardDisplayType`/`displayValue` **não migram**: um
+  texto tipo "$36.000" nunca teve regra real por trás, e perpetuá-lo na
+  migração seria manter o próprio dark pattern que esta fase elimina
+  (`subtitle`, quando presente, vira a mensagem final — nenhum valor
+  monetário é inventado). Nenhuma versão publicada é reescrita; `parseFunnelConfig`
+  encadeia `1→2→3` automaticamente via `migrateFunnelConfig`.
+- **Storefront**: `RuntimeState` perde `rewardProgress`/`rewardUnlocked`
+  como campos mutáveis — `FunnelRuntime` recalcula via
+  `evaluateGamification` (memoizado) a cada mudança de
+  `selectedOfferId`/`lastOrder`, nunca persiste o resultado como verdade
+  em `sessionStorage`. A action `UNLOCK_REWARD` foi **removida**: não
+  existe mais "clique para desbloquear" — o CTA da etapa REWARD é sempre
+  "continuar". Isso elimina de vez a possibilidade de o client falsificar
+  100%/desbloqueio.
+- **Builder**: `RewardStepEditor` reescrito — seletor "Tipo de progreso"
+  (3 opções, campos condicionais), tipos `PRICING_REWARD` aparecem
+  desabilitados no seletor (nunca selecionáveis), preview embutido que usa
+  o **mesmo** `evaluateGamification()` do storefront com um seletor de
+  cenário (sem oferta / cada oferta / pedido confirmado), e avisos
+  não-bloqueantes (`computeGamificationWarnings`, ex.: progresso caindo
+  entre ofertas) — nunca impedem salvar.
+- **Analytics (escopo desta fase)**: só a parte pura e testável —
+  `buildGamificationAnalyticsEvent` (payload sem PII) e
+  `shouldEmitGamificationEvent`/`isRewardUnlockTransition` (dedup por
+  sessão/etapa/milestone, `reward_unlocked` só na transição PARA
+  `COMPLETED`, nunca ao entrar em `READY`). Persistência real (tabela,
+  endpoint) fica deliberadamente fora desta fase — decisão de escopo
+  documentada, não esquecimento.
+- **Template seed**: `progress-reward-cod-v1` usa `OFFER_SELECTION_PROGRESS`
+  atrelado às ofertas reais do funil (`qty-1`/`qty-2`/`qty-3`: 85% sem
+  seleção, 90/95/100% por oferta) — progresso genuinamente ligado à
+  escolha do visitante, não mais um número solto.
+
 ## Testes
 
 ```bash
@@ -712,3 +797,38 @@ como já decidido na Fase 3; e, no `admin/service.ts`, a canonização de
 bug latente em que o JSON migrava para V2 mas a coluna de versão ficava
 parada em 1. Nenhuma versão publicada histórica é reescrita: só a
 transição DRAFT→PUBLISHED e o salvamento de draft canonizam a linha.
+
+Da Fase 4B: `evaluateGamification` para os 3 tipos de regra
+(`STATIC_PROGRESS`, `OFFER_SELECTION_PROGRESS` com base/mapeamento e id de
+oferta inexistente nunca produzindo benefício, `VALUE_THRESHOLD` derivando
+`currentValue`/`remainingValue` da economia real via `resolveOfferPrice`),
+o override incondicional de `ORDER_CONFIRMED` (100%/COMPLETED/unlocked
+mesmo com a regra em 0%), e — o ponto central da correção de design desta
+fase — a distinção explícita entre progresso matemático e desbloqueio
+comercial: uma regra em 100% sem pedido confirmado é sempre `READY` com
+`unlocked=false`, nunca `COMPLETED`, e o motor nunca faz clamp artificial
+do percentual (100% real sempre aparece como 100%, a diferença fica no
+`status`). Também: milestones (mais alto alcançado, nenhum antes do
+primeiro, sempre resolvido em COMPLETED), precisão (nunca NaN/Infinity/
+fora de 0–100), `roundProgressForDisplay` arredondando só a exibição;
+`computeGamificationWarnings` (aviso não-bloqueante de progresso caindo
+entre ofertas, nunca para STATIC_PROGRESS/VALUE_THRESHOLD, nunca lança sem
+etapa OFFER); `buildGamificationAnalyticsEvent`/`shouldEmitGamificationEvent`/
+`isRewardUnlockTransition` (payload sem PII, dedup por sessão/etapa/
+milestone, `reward_unlocked` só na transição para COMPLETED — explicitamente
+nunca ao entrar em READY); `migrateFunnelConfig` V2→V3 (REWARD ganha
+`STATIC_PROGRESS` com o mesmo `baseProgress`, `displayValue` nunca migra,
+milestones nunca inventados, etapas não-REWARD intocadas, encadeamento
+1→2→3 automático); validação semântica V3 (`OFFER_SELECTION_PROGRESS`/
+`VALUE_THRESHOLD` exigindo etapa OFFER habilitada, `offerId` inexistente
+bloqueado, `FIXED_DISCOUNT`/`PERCENT_DISCOUNT` sempre bloqueados,
+`MESSAGE_ONLY`/`FREE_SHIPPING_DISPLAY` sempre livres); `RewardStepEditor`
+(troca de tipo reseta a regra, campos condicionais, tipos PRICING_REWARD
+desabilitados no seletor, preview usando o mesmo motor do storefront com
+todos os cenários incluindo pedido confirmado, milestones); `RewardStepView`
+(percentual real exibido, READY nunca mostra a mensagem de desbloqueio,
+COMPLETED mostra a mensagem final configurada, barra de progresso com ARIA
+completo, CTA único sempre "continuar" — sem botão de desbloquear
+separado); e backward compatibility de ponta a ponta (funil V1/V2 antigo
+continua abrindo, navegando e criando pedido; V1→V3 e V2→V3 testados
+explicitamente, nenhuma versão publicada histórica é reescrita).

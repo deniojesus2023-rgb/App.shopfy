@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import type { GamificationMilestone, GamificationProgressRule, GamificationReward } from "./gamification";
 import type { FunnelConfig } from "./schema";
 import { validateFunnelSemantics, type FunnelProductRef } from "./semantic-validation";
 
@@ -66,6 +67,51 @@ function codFormStep(overrides: Partial<{ id: string; order: number; enabled: bo
   };
 }
 
+function offerStep(overrides: Partial<{ id: string; order: number; enabled: boolean; offerIds: string[] }> = {}) {
+  const offerIds = overrides.offerIds ?? ["o1", "o2"];
+  return {
+    id: overrides.id ?? "offer",
+    type: "OFFER" as const,
+    enabled: overrides.enabled ?? true,
+    order: overrides.order ?? 2,
+    config: {
+      offers: offerIds.map((id, i) => ({
+        id,
+        quantity: i + 1,
+        label: `${i + 1}x`,
+        pricing: { type: "UNIT_MULTIPLIER" as const },
+      })),
+    },
+  };
+}
+
+function rewardStep(overrides: {
+  id?: string;
+  order?: number;
+  enabled?: boolean;
+  progressRule: GamificationProgressRule;
+  reward?: GamificationReward;
+  milestones?: GamificationMilestone[];
+}) {
+  return {
+    id: overrides.id ?? "reward",
+    type: "REWARD" as const,
+    enabled: overrides.enabled ?? true,
+    order: overrides.order ?? 1,
+    config: {
+      title: "Prêmio",
+      progressRule: overrides.progressRule,
+      reward: overrides.reward ?? { type: "MESSAGE_ONLY" as const, message: "Desbloqueado" },
+      milestones: overrides.milestones ?? [],
+      showProgressBar: true,
+      showRemainingValue: false,
+      showCurrentValue: false,
+      ctaText: "Continuar",
+      finalMessage: "Desbloqueado",
+    },
+  };
+}
+
 function upsellStep(overrides: Partial<{ id: string; order: number; enabled: boolean }> = {}) {
   return {
     id: overrides.id ?? "upsell",
@@ -77,7 +123,7 @@ function upsellStep(overrides: Partial<{ id: string; order: number; enabled: boo
 }
 
 function config(steps: FunnelConfig["steps"]): FunnelConfig {
-  return { schemaVersion: 2, theme, steps, settings: {} };
+  return { schemaVersion: 3, theme, steps, settings: {} };
 }
 
 const baseContext = { workspaceId: "ws_1", shopifyStoreId: "store_1" };
@@ -204,5 +250,134 @@ describe("validateFunnelSemantics", () => {
       ],
     });
     expect(errors.some((e) => e.message.includes("loja diferente"))).toBe(true);
+  });
+
+  describe("REWARD — Fase 4B", () => {
+    it("STATIC_PROGRESS não exige etapa OFFER", () => {
+      const errors = validateFunnelSemantics(
+        config([productStep(), successStep(), rewardStep({ order: 2, progressRule: { type: "STATIC_PROGRESS", baseProgress: 50 } })]),
+        { ...baseContext, funnelProducts: [primaryProductRef()] }
+      );
+      expect(errors).toEqual([]);
+    });
+
+    it("OFFER_SELECTION_PROGRESS sem etapa OFFER habilitada é bloqueado", () => {
+      const errors = validateFunnelSemantics(
+        config([
+          productStep(),
+          successStep(),
+          rewardStep({ progressRule: { type: "OFFER_SELECTION_PROGRESS", baseProgress: 0, offerProgress: { o1: 50 } } }),
+        ]),
+        { ...baseContext, funnelProducts: [primaryProductRef()] }
+      );
+      expect(errors.some((e) => e.message.includes("OFFER_SELECTION_PROGRESS"))).toBe(true);
+    });
+
+    it("OFFER_SELECTION_PROGRESS referenciando offerId inexistente é bloqueado", () => {
+      const errors = validateFunnelSemantics(
+        config([
+          productStep(),
+          successStep(),
+          offerStep({ offerIds: ["o1"] }),
+          rewardStep({
+            progressRule: { type: "OFFER_SELECTION_PROGRESS", baseProgress: 0, offerProgress: { o1: 50, "inexistente": 90 } },
+          }),
+        ]),
+        { ...baseContext, funnelProducts: [primaryProductRef()] }
+      );
+      expect(errors.some((e) => e.message.includes("inexistente"))).toBe(true);
+    });
+
+    it("OFFER_SELECTION_PROGRESS com todos os offerId válidos passa", () => {
+      const errors = validateFunnelSemantics(
+        config([
+          productStep(),
+          successStep(),
+          offerStep({ offerIds: ["o1", "o2"] }),
+          rewardStep({
+            order: 3,
+            progressRule: { type: "OFFER_SELECTION_PROGRESS", baseProgress: 85, offerProgress: { o1: 90, o2: 100 } },
+          }),
+        ]),
+        { ...baseContext, funnelProducts: [primaryProductRef()] }
+      );
+      expect(errors).toEqual([]);
+    });
+
+    it("VALUE_THRESHOLD sem etapa OFFER habilitada é bloqueado", () => {
+      const errors = validateFunnelSemantics(
+        config([
+          productStep(),
+          successStep(),
+          rewardStep({
+            progressRule: { type: "VALUE_THRESHOLD", source: "SELECTED_OFFER_SAVINGS", targetValue: 42000, benefitType: "SAVINGS" },
+          }),
+        ]),
+        { ...baseContext, funnelProducts: [primaryProductRef()] }
+      );
+      expect(errors.some((e) => e.message.includes("VALUE_THRESHOLD"))).toBe(true);
+    });
+
+    it("VALUE_THRESHOLD com etapa OFFER habilitada passa", () => {
+      const errors = validateFunnelSemantics(
+        config([
+          productStep(),
+          successStep(),
+          offerStep(),
+          rewardStep({
+            order: 3,
+            progressRule: { type: "VALUE_THRESHOLD", source: "SELECTED_OFFER_SAVINGS", targetValue: 42000, benefitType: "SAVINGS" },
+          }),
+        ]),
+        { ...baseContext, funnelProducts: [primaryProductRef()] }
+      );
+      expect(errors).toEqual([]);
+    });
+
+    it("FIXED_DISCOUNT (PRICING_REWARD) é bloqueado — sem integração com o Pricing Engine ainda", () => {
+      const errors = validateFunnelSemantics(
+        config([
+          productStep(),
+          successStep(),
+          rewardStep({
+            progressRule: { type: "STATIC_PROGRESS", baseProgress: 50 },
+            reward: { type: "FIXED_DISCOUNT", amount: 1000 },
+          }),
+        ]),
+        { ...baseContext, funnelProducts: [primaryProductRef()] }
+      );
+      expect(errors.some((e) => e.message.includes("FIXED_DISCOUNT"))).toBe(true);
+    });
+
+    it("PERCENT_DISCOUNT (PRICING_REWARD) é bloqueado", () => {
+      const errors = validateFunnelSemantics(
+        config([
+          productStep(),
+          successStep(),
+          rewardStep({
+            progressRule: { type: "STATIC_PROGRESS", baseProgress: 50 },
+            reward: { type: "PERCENT_DISCOUNT", percent: 10 },
+          }),
+        ]),
+        { ...baseContext, funnelProducts: [primaryProductRef()] }
+      );
+      expect(errors.some((e) => e.message.includes("PERCENT_DISCOUNT"))).toBe(true);
+    });
+
+    it("MESSAGE_ONLY e FREE_SHIPPING_DISPLAY passam livremente (DISPLAY_REWARD)", () => {
+      const errors = validateFunnelSemantics(
+        config([
+          productStep(),
+          successStep(),
+          rewardStep({
+            order: 2,
+            progressRule: { type: "STATIC_PROGRESS", baseProgress: 50 },
+            reward: { type: "FREE_SHIPPING_DISPLAY", message: "Envío gratis" },
+          }),
+        ]),
+        { ...baseContext, funnelProducts: [primaryProductRef()] }
+      );
+      expect(errors).toEqual([]);
+    });
   });
 });

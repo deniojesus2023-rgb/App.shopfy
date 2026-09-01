@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { funnelConfigV1Schema, funnelConfigV2Schema } from "./schema";
+import { funnelConfigV1Schema, funnelConfigV2Schema, funnelConfigV3Schema } from "./schema";
 import { parseFunnelConfig } from "./parse";
 import { PROGRESS_REWARD_COD_TEMPLATE } from "./seed-templates";
 
@@ -18,9 +18,48 @@ function baseConfig(steps: unknown[]) {
   return { schemaVersion: 1, theme: validTheme, steps, settings: {} };
 }
 
-describe("funnelConfigV2Schema — template atual", () => {
-  it("aceita o template seed válido (V2, com pricing em cada oferta)", () => {
-    expect(funnelConfigV2Schema.safeParse(PROGRESS_REWARD_COD_TEMPLATE.defaultConfig).success).toBe(true);
+describe("funnelConfigV3Schema — template atual", () => {
+  it("aceita o template seed válido (V3, REWARD com regra real)", () => {
+    expect(funnelConfigV3Schema.safeParse(PROGRESS_REWARD_COD_TEMPLATE.defaultConfig).success).toBe(true);
+  });
+});
+
+// Shape v2 de verdade (Fase 4A): OFFER já com `pricing`, mas REWARD ainda
+// texto/número digitado — exatamente o que uma FunnelVersion PUBLISHED
+// entre a Fase 4A e a Fase 4B tem gravado no banco.
+const legacyV2Config = {
+  schemaVersion: 2,
+  theme: validTheme,
+  settings: {},
+  steps: [
+    successStep("s", 0),
+    {
+      id: "o",
+      type: "OFFER",
+      enabled: true,
+      order: 1,
+      config: { offers: [{ id: "qty-1", quantity: 1, label: "1x", pricing: { type: "UNIT_MULTIPLIER" } }] },
+    },
+    {
+      id: "r",
+      type: "REWARD",
+      enabled: true,
+      order: 2,
+      config: {
+        title: "Prêmio",
+        subtitle: "Continue",
+        rewardDisplayType: "PERCENTAGE",
+        displayValue: "15%",
+        initialProgress: 85,
+        ctaText: "Desbloquear",
+      },
+    },
+  ],
+};
+
+describe("funnelConfigV2Schema — estrutura legada (Fase 4A)", () => {
+  it("aceita config v2 de verdade (OFFER com pricing, REWARD ainda texto/número)", () => {
+    expect(funnelConfigV2Schema.safeParse(legacyV2Config).success).toBe(true);
   });
 });
 
@@ -249,15 +288,28 @@ const legacyV1Config = {
 };
 
 describe("parseFunnelConfig", () => {
-  it("retorna o config tipado para configSchemaVersion 2 (atual)", () => {
-    const result = parseFunnelConfig(2, PROGRESS_REWARD_COD_TEMPLATE.defaultConfig);
-    expect(result.schemaVersion).toBe(2);
+  it("retorna o config tipado para configSchemaVersion 3 (atual)", () => {
+    const result = parseFunnelConfig(3, PROGRESS_REWARD_COD_TEMPLATE.defaultConfig);
+    expect(result.schemaVersion).toBe(3);
     expect(result.steps.length).toBeGreaterThan(0);
   });
 
-  it("migra configSchemaVersion 1 para o shape atual (V2) em memória", () => {
+  it("migra configSchemaVersion 2 para o shape atual (V3) em memória — REWARD ganha regra real", () => {
+    const result = parseFunnelConfig(2, legacyV2Config);
+    expect(result.schemaVersion).toBe(3);
+    const rewardStep = result.steps.find((s) => s.type === "REWARD");
+    expect(rewardStep?.type).toBe("REWARD");
+    if (rewardStep?.type === "REWARD") {
+      // Mesmo baseProgress que o initialProgress antigo mostrava — o
+      // comportamento visual não muda, só deixa de ser texto solto.
+      expect(rewardStep.config.progressRule).toEqual({ type: "STATIC_PROGRESS", baseProgress: 85 });
+      expect(rewardStep.config.reward).toEqual({ type: "MESSAGE_ONLY", message: "Continue" });
+    }
+  });
+
+  it("migra configSchemaVersion 1 para o shape atual (V3) em memória, encadeando 1->2->3", () => {
     const result = parseFunnelConfig(1, legacyV1Config);
-    expect(result.schemaVersion).toBe(2);
+    expect(result.schemaVersion).toBe(3);
     const offerStep = result.steps.find((s) => s.type === "OFFER");
     expect(offerStep?.type).toBe("OFFER");
     if (offerStep?.type === "OFFER") {
@@ -275,5 +327,9 @@ describe("parseFunnelConfig", () => {
 
   it("lança ValidationError para config v2 estruturalmente inválido", () => {
     expect(() => parseFunnelConfig(2, { schemaVersion: 2 })).toThrow();
+  });
+
+  it("lança ValidationError para config v3 estruturalmente inválido", () => {
+    expect(() => parseFunnelConfig(3, { schemaVersion: 3 })).toThrow();
   });
 });

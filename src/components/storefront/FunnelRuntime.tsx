@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect, useReducer } from "react";
+import { useEffect, useMemo, useReducer } from "react";
 
+import { evaluateGamification, type GamificationResult } from "@/modules/funnels/gamification/evaluate";
 import type { ResolvedFunnel } from "@/modules/funnels/runtime/resolve";
 import {
   clearRuntimeSession,
@@ -18,10 +19,20 @@ import { ProgressBar } from "./ProgressBar";
 import { StepRenderer } from "./StepRenderer";
 import { StorefrontShell } from "./StorefrontShell";
 
-function findRewardInitialProgress(resolved: ResolvedFunnel): number {
-  const rewardStep = resolved.config.steps.find((s) => s.type === "REWARD" && s.enabled);
-  return rewardStep && rewardStep.type === "REWARD" ? rewardStep.config.initialProgress : 0;
-}
+// Nenhum resultado de gamificação existe fora de uma etapa REWARD
+// habilitada — este placeholder nunca é exibido (StepRenderer só o passa
+// adiante quando `step.type === "REWARD"`), só evita um `| null` se
+// espalhando por toda a árvore de componentes.
+const NO_REWARD_STEP_RESULT: GamificationResult = {
+  progressPercent: 0,
+  status: "LOCKED",
+  unlocked: false,
+  currentValue: null,
+  targetValue: null,
+  remainingValue: null,
+  milestone: null,
+  reward: { type: "MESSAGE_ONLY", message: "" },
+};
 
 export function FunnelRuntime({
   resolved,
@@ -50,7 +61,6 @@ export function FunnelRuntime({
         funnelId: resolved.funnel.id,
         funnelVersionId: resolved.version.id,
         steps: resolved.config.steps,
-        initialRewardProgress: findRewardInitialProgress(resolved),
         checkoutAttemptId: typeof crypto !== "undefined" ? crypto.randomUUID() : Math.random().toString(36),
       })
   );
@@ -84,6 +94,26 @@ export function FunnelRuntime({
   const hasNextStep = currentIndex >= 0 && currentIndex < enabledSteps.length - 1;
   const offerStep = resolved.config.steps.find((s) => s.type === "OFFER" && s.enabled);
   const offerConfig = offerStep?.type === "OFFER" ? offerStep.config : null;
+  const offers = offerConfig?.offers ?? null;
+
+  const rewardStep = resolved.config.steps.find((s) => s.type === "REWARD" && s.enabled);
+  const rewardConfig = rewardStep?.type === "REWARD" ? rewardStep.config : null;
+
+  // Sempre RECALCULADO a partir do config + estado do runtime (Fase 4B) —
+  // nunca uma "verdade" armazenada em RuntimeState/sessionStorage. O
+  // pedido só é `orderConfirmed` depois que o Order local foi REALMENTE
+  // criado (Fase 3), nunca por clique de botão.
+  const gamification = useMemo<GamificationResult | null>(() => {
+    if (!rewardConfig) return null;
+    return evaluateGamification({
+      progressRule: rewardConfig.progressRule,
+      reward: rewardConfig.reward,
+      milestones: rewardConfig.milestones,
+      offers,
+      unitPrice: resolved.snapshot.unitPrice,
+      context: { selectedOfferId: state.selectedOfferId, orderConfirmed: state.lastOrder !== null },
+    });
+  }, [rewardConfig, offers, resolved.snapshot.unitPrice, state.selectedOfferId, state.lastOrder]);
 
   if (!currentStep) {
     return null;
@@ -102,6 +132,7 @@ export function FunnelRuntime({
           snapshot={resolved.snapshot}
           currency={resolved.currency}
           offerConfig={offerConfig}
+          gamification={gamification ?? NO_REWARD_STEP_RESULT}
           upsellProduct={resolved.upsellProduct}
           hasNextStep={hasNextStep}
           funnelPublicId={resolved.funnel.publicId}
@@ -110,7 +141,6 @@ export function FunnelRuntime({
             onContinue: () => dispatch({ type: "NEXT_STEP", steps: resolved.config.steps }),
             onSelectOffer: (offerId, quantity) => dispatch({ type: "SELECT_OFFER", offerId, quantity }),
             onSelectPaymentMethod: (method) => dispatch({ type: "SELECT_PAYMENT_METHOD", method }),
-            onUnlockReward: () => dispatch({ type: "UNLOCK_REWARD" }),
             onCodSubmitted: (order) => {
               dispatch({ type: "ORDER_CONFIRMED", order });
               dispatch({ type: "NEXT_STEP", steps: resolved.config.steps });

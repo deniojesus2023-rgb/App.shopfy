@@ -18,7 +18,7 @@ const theme = {
 };
 
 const config: FunnelConfig = {
-  schemaVersion: 2,
+  schemaVersion: 3,
   theme,
   settings: {},
   steps: [
