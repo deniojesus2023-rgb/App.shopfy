@@ -14,7 +14,7 @@ import { UpsellStepView } from "./steps/UpsellStepView";
 export interface StepRendererCallbacks {
   onContinue: () => void;
   onSelectOffer: (offerId: string, quantity: number) => void;
-  onSelectPaymentMethod: (method: "COD" | "ONLINE") => void;
+  onSelectPaymentMethod: (paymentMethodId: string) => void;
   onCodSubmitted: (order: OrderConfirmation) => void;
   onAcceptUpsell: () => void;
   onDeclineUpsell: () => void;
@@ -33,6 +33,8 @@ export function StepRenderer({
   currency,
   offerConfig,
   gamification,
+  paymentChoiceConfig,
+  offerTotal,
   upsellProduct,
   hasNextStep,
   callbacks,
@@ -48,6 +50,10 @@ export function StepRenderer({
   offerConfig: Extract<FunnelStep, { type: "OFFER" }>["config"] | null;
   /** Resultado já calculado por evaluateGamification() — nunca recomputado aqui. */
   gamification: GamificationResult;
+  /** Etapa PAYMENT_CHOICE habilitada do funil (se houver). */
+  paymentChoiceConfig: Extract<FunnelStep, { type: "PAYMENT_CHOICE" }>["config"] | null;
+  /** Total da oferta selecionada, ANTES do ajuste de método de pagamento — base pro preço mostrado em PAYMENT_CHOICE. */
+  offerTotal: number;
   upsellProduct: ResolvedUpsellProduct | null;
   hasNextStep: boolean;
   callbacks: StepRendererCallbacks;
@@ -95,12 +101,21 @@ export function StepRenderer({
         <PaymentChoiceStepView
           config={step.config}
           theme={theme}
-          selected={state.selectedPaymentMethod}
+          offerTotal={offerTotal}
+          currency={currency}
+          selected={state.selectedPaymentMethodId}
+          isPreview={isPreview}
           onSelect={callbacks.onSelectPaymentMethod}
           onContinue={callbacks.onContinue}
         />
       );
-    case "COD_FORM":
+    case "COD_FORM": {
+      // Resolve method (COD/ONLINE) a partir do id selecionado — sem etapa
+      // PAYMENT_CHOICE, o padrão é sempre COD (mesmo padrão de oferta
+      // sintética já usado quando não há etapa OFFER).
+      const selectedMethod = paymentChoiceConfig
+        ? (paymentChoiceConfig.paymentMethods.find((m) => m.id === state.selectedPaymentMethodId)?.method ?? null)
+        : "COD";
       return (
         <CodFormStepView
           config={step.config}
@@ -109,11 +124,13 @@ export function StepRenderer({
           funnelPublicId={funnelPublicId}
           funnelVersionId={state.funnelVersionId}
           checkoutAttemptId={state.checkoutAttemptId}
-          selectedPaymentMethod={state.selectedPaymentMethod}
+          selectedPaymentMethod={selectedMethod}
+          selectedPaymentMethodId={state.selectedPaymentMethodId}
           selectedOfferId={state.selectedOfferId}
           isPreview={isPreview}
         />
       );
+    }
     case "SUCCESS":
       return (
         <SuccessStepView

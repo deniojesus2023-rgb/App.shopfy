@@ -1,11 +1,11 @@
-import { funnelConfigV3Schema } from "./schema";
+import { funnelConfigV4Schema } from "./schema";
 
 // Config inicial do template seed — validado pelo mesmo schema Zod usado
 // para config de usuário, para nunca divergir do que a aplicação aceitaria.
 // Separado de prisma/seed.ts para poder ser importado em testes sem
 // disparar a execução do script de seed (que toca o banco).
-export const progressRewardCodDefaultConfig = funnelConfigV3Schema.parse({
-  schemaVersion: 3,
+export const progressRewardCodDefaultConfig = funnelConfigV4Schema.parse({
+  schemaVersion: 4,
   theme: {
     primaryColor: "#111827",
     backgroundColor: "#FFFFFF",
@@ -97,14 +97,31 @@ export const progressRewardCodDefaultConfig = funnelConfigV3Schema.parse({
       enabled: true,
       order: 3,
       config: {
-        allowCod: true,
-        allowOnlinePayment: true,
-        codLabel: "Pagar na entrega",
-        onlinePaymentLabel: "Pagar agora",
-        codDescription: "Pague em dinheiro quando receber.",
-        onlinePaymentDescription: "Pague com cartão e ganhe desconto.",
-        onlinePaymentDiscountDisplay: "5% OFF",
-        recommendedMethod: "COD",
+        paymentMethods: [
+          {
+            id: "cod",
+            method: "COD",
+            provider: "INTERNAL_COD",
+            enabled: true,
+            label: "Pagar na entrega",
+            description: "Pague em dinheiro quando receber.",
+            pricing: { type: "NONE" },
+          },
+          {
+            id: "online",
+            method: "ONLINE",
+            // SHOPIFY_CHECKOUT é o único provider ONLINE configurável nesta
+            // fase (spec item 9/16) — nunca "pronto" de verdade
+            // (isCheckoutProviderReady), então nunca aparece no storefront
+            // público até uma fase futura de integração real.
+            provider: "SHOPIFY_CHECKOUT",
+            enabled: true,
+            label: "Pagar agora",
+            description: "Pague en línea con un descuento adicional.",
+            pricing: { type: "PERCENT_DISCOUNT", percent: 5 },
+          },
+        ],
+        recommendedMethodId: "cod",
       },
     },
     {
@@ -158,7 +175,7 @@ export const PROGRESS_REWARD_COD_TEMPLATE = {
   key: "progress-reward-cod-v1",
   name: "Progress Reward COD",
   description: "Funil com barra de progresso/recompensa, ofertas por quantidade e checkout COD.",
-  configSchemaVersion: 3,
+  configSchemaVersion: 4,
   defaultConfig: progressRewardCodDefaultConfig,
   isActive: true,
 } as const;

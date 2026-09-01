@@ -451,7 +451,7 @@ describe("updateDraftConfig — optimistic concurrency", () => {
     ).rejects.toThrow();
   });
 
-  it("salvar um draft v1 grava configSchemaVersion=3 (canoniza no primeiro save, nunca deixa a coluna divergir do JSON)", async () => {
+  it("salvar um draft v1 grava configSchemaVersion=4 (canoniza no primeiro save, nunca deixa a coluna divergir do JSON)", async () => {
     const funnel = await seedFunnelWithDraft();
     const draft = versions[0];
     expect(draft.configSchemaVersion).toBe(1);
@@ -466,8 +466,8 @@ describe("updateDraftConfig — optimistic concurrency", () => {
     });
 
     const stored = versions.find((v) => v.id === draft.id)!;
-    expect(stored.configSchemaVersion).toBe(3);
-    expect((stored.config as { schemaVersion: number }).schemaVersion).toBe(3);
+    expect(stored.configSchemaVersion).toBe(4);
+    expect((stored.config as { schemaVersion: number }).schemaVersion).toBe(4);
   });
 });
 
@@ -494,14 +494,14 @@ describe("publishFunnel", () => {
     expect(versions[0].status).toBe("PUBLISHED");
   });
 
-  it("publicar um draft v1 canoniza para configSchemaVersion=3 no exato momento da transição DRAFT->PUBLISHED", async () => {
+  it("publicar um draft v1 canoniza para configSchemaVersion=4 no exato momento da transição DRAFT->PUBLISHED", async () => {
     const funnel = await seedFunnelWithDraft();
     expect(versions[0].configSchemaVersion).toBe(1);
 
     await publishFunnel("ws_1", funnel.id, fakeUser);
 
-    expect(versions[0].configSchemaVersion).toBe(3);
-    expect((versions[0].config as { schemaVersion: number }).schemaVersion).toBe(3);
+    expect(versions[0].configSchemaVersion).toBe(4);
+    expect((versions[0].config as { schemaVersion: number }).schemaVersion).toBe(4);
   });
 
   it("cria um FunnelProductSnapshot imutável a partir do produto/variante atual", async () => {

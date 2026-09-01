@@ -8,12 +8,15 @@ a **Fase 1B** (fila persistente + importação/sincronização de catálogo), a
 **Fase 2B** (storefront público + runtime de funil em `/f/[publicId]/[slug]`),
 a **Fase 2C** (Funnel Builder MVP — editor visual), a **Fase 3** (COD Engine
 + Order Engine + criação de pedido na Shopify), a **Fase 4A** (Pricing &
-Offer Engine — preço fixo por oferta) e a **Fase 4B** (Gamification Engine —
-progresso e recompensa determinísticos, ver seção própria abaixo).
-Pagamento online real, fornecedores/dropshipping, WhatsApp, recuperação de
-carrinho, domínio próprio, antifraude sofisticado, order editing de upsell,
-recompensa econômica real (PRICING_REWARD) e persistência de analytics de
-gamificação ainda não foram implementados.
+Offer Engine — preço fixo por oferta), a **Fase 4B** (Gamification Engine —
+progresso e recompensa determinísticos) e a **Fase 4C** (Payment Method
+Pricing & Checkout Preparation — desconto por método de pagamento e
+preparação de checkout externo, ver seção própria abaixo).
+Pagamento online real (redirect Shopify Checkout/Yampi), fornecedores/
+dropshipping, WhatsApp, recuperação de carrinho, domínio próprio,
+antifraude sofisticado, order editing de upsell, recompensa econômica real
+de gamificação (PRICING_REWARD) e persistência de analytics ainda não
+foram implementados.
 
 ## Stack
 
@@ -668,6 +671,107 @@ server-side.
   seleção, 90/95/100% por oferta) — progresso genuinamente ligado à
   escolha do visitante, não mais um número solto.
 
+## Payment Method Pricing & Checkout Preparation (Fase 4C)
+
+O SaaS ainda não tem checkout próprio para cartão/PSE. Esta fase constrói
+a arquitetura para que Pricing, Funnel Runtime e Order Engine entendam a
+diferença entre pagamento na entrega e pagamento online, e apliquem
+benefícios comerciais reais por método de pagamento — **sem** integrar
+nenhum checkout externo de verdade ainda.
+
+- **Três conceitos deliberadamente separados** (nunca misturados):
+  `PaymentMethod` (`COD`/`ONLINE` — como o cliente pretende pagar),
+  `CheckoutProvider` (`INTERNAL_COD`/`SHOPIFY_CHECKOUT`/`YAMPI` — quem
+  executaria o checkout) e `PaymentMethodPricing` (`NONE`/
+  `FIXED_DISCOUNT`/`PERCENT_DISCOUNT` — o efeito comercial daquele
+  método). Regra estrutural: `COD` só roda em `INTERNAL_COD`; `ONLINE` só
+  em `SHOPIFY_CHECKOUT`/`YAMPI` — validado no próprio schema do step.
+- **`isCheckoutProviderReady(provider)`**: único ponto de verdade sobre
+  integração real — só `INTERNAL_COD` é `true` nesta fase inteira,
+  hardcoded. Storefront público só expõe/seleciona método `enabled ∧
+  ready` (fail closed: nenhum botão de checkout quebrado chega ao
+  consumidor). Builder preview mostra todos os métodos habilitados, com
+  badge "No conectado" quando não-ready — nunca confunde "visível no
+  preview" com "disponível ao público".
+- **Pricing Engine estendido**: `calculateOrderQuote` passa a considerar
+  `paymentMethodPricing` além da oferta. Fluxo: preço da oferta (Fase 4A)
+  → ajuste de método de pagamento → frete → quote final. Núcleo puro
+  novo `resolvePaymentMethodPrice(offerTotal, pricing)` (mesmo espírito
+  de `resolveOfferPrice`) — o desconto de pagamento incide **sempre**
+  sobre o total já resolvido da oferta, nunca sobre `referenceSubtotal`
+  (nunca duplica desconto: uma oferta `FIXED_TOTAL` de 149.900 com
+  desconto de pagamento de 5.000 dá exatamente 144.900, nunca
+  179.800-29.900-5.000 recalculado errado).
+- **Breakdown completo no quote**: `subtotal` (referência pura),
+  `offerDiscount` (só da oferta), `paymentMethodDiscount` (só do método
+  de pagamento), `discountTotal` (soma dos dois — mesmo campo de sempre,
+  agora generalizado), `shippingTotal`, `total`.
+- **Fail closed, nunca clamp silencioso**: "desconto não pode superar o
+  total" não é validável na CONFIG (o total depende de qual oferta o
+  cliente escolher em runtime) — é checado em `calculateOrderQuote`, que
+  lança `ValidationError` se o total final ficar `<= 0`. Nunca cria
+  pedido grátis, nunca cobra um valor clampado silenciosamente diferente
+  do configurado.
+- **Sem tocar `OrderItem`/worker Shopify**: `OrderItem.lineTotal` continua
+  sendo o total final exato (agora já refletindo o desconto de
+  pagamento), preservando 100% intocado o invariante `Σ item.lineTotal
+  === Order.total` que o worker Shopify já verifica desde a Fase 4A —
+  zero mudança em `shopify-order-create.ts`/`shopify-line-items.ts`.
+- **`FunnelConfigV4`**: `PAYMENT_CHOICE` evolui de `allowCod`/
+  `allowOnlinePayment`/labels soltos para `paymentMethods: PaymentMethodConfig[]`
+  tipados (identidade, provider, regra de preço). Migração `V3→V4`:
+  `allowCod=true` vira COD/INTERNAL_COD/`NONE` (comportamento idêntico);
+  `allowOnlinePayment=true` vira ONLINE/`SHOPIFY_CHECKOUT`/`NONE`, com
+  `enabled` preservando o valor antigo — mas como `SHOPIFY_CHECKOUT` é
+  hardcoded not-ready, a visibilidade pública real fica idêntica à de
+  antes (ONLINE nunca funcionava de verdade no público; antes era
+  rejeitado no servidor após seleção, agora simplesmente não aparece).
+  Nenhum provider é "ativado de verdade" pela migração — é estruturalmente
+  impossível, já que readiness é hardcoded nesta fase inteira.
+  `parseFunnelConfig` encadeia `1→2→3→4` automaticamente.
+- **`Order` ganha 2 colunas aditivas** (migration Prisma real desta fase):
+  `paymentMethodDiscount` (granularidade do breakdown — sem ela, a
+  parcela de desconto vinda do pagamento seria irreconstituível depois) e
+  `checkoutProvider` (`OrderCheckoutProvider`: `INTERNAL_COD`/
+  `SHOPIFY_CHECKOUT`/`YAMPI` — congelado no momento da criação, nunca
+  reconsultado da config atual do Funnel; sempre `INTERNAL_COD` nesta
+  fase, mas persistir agora evita um backfill doloroso quando ONLINE
+  virar real). `Order.total = subtotal - discountTotal + shipping`
+  continua exatamente a mesma fórmula de sempre.
+- **Servidor (`POST /api/storefront/orders`)**: recebe
+  `selectedPaymentMethodId` (identidade apenas) em vez de confiar num
+  enum `COD`/`ONLINE` vindo do browser. Resolve method → provider →
+  pricing sempre do config publicado; só cria Order quando
+  `method=COD ∧ provider=INTERNAL_COD ∧ isCheckoutProviderReady` — ONLINE
+  nunca finaliza transação real nesta fase, mesmo que um provider futuro
+  fique "ready" antes de a integração de fato existir (segunda trava
+  independente do `enabled`). Sem etapa PAYMENT_CHOICE, sintetiza um
+  método COD/INTERNAL_COD/NONE (mesmo padrão já usado para OFFER).
+- **`prepareOnlineCheckout()`**: contrato futuro deliberadamente sem
+  implementação — recebe o `OrderQuote` server-authoritative inteiro
+  (nunca um preço solto), porque o catálogo Shopify pode estar em
+  89.900×2=179.800 enquanto o preço combinado (bundle `FIXED_TOTAL` +
+  desconto de pagamento) é 144.900: um redirect ingênuo perderia os dois
+  ajustes. Sempre retorna `ok:false` (`PROVIDER_NOT_READY` ou
+  `NOT_IMPLEMENTED`) — não decide agora se a integração real vai usar
+  cart, checkout permalink, discount ou draft order (exigiria validação
+  contra documentação oficial que este projeto não tem verificada ainda).
+- **Builder**: `PaymentChoiceEditor` reescrito — toggle "Activar pago
+  contra entrega"/"Activar pago online", seletor de proveedor (só pra
+  ONLINE — COD é sempre `INTERNAL_COD`), seletor de tipo de precio
+  (`NONE`/`FIXED_DISCOUNT`/`PERCENT_DISCOUNT`) com preview ao vivo
+  (Precio de la oferta / Descuento por método / Total), aviso
+  não-bloqueante (`computePaymentMethodWarnings`) quando um método
+  habilitado usa provider não conectado.
+- **Storefront**: `PaymentChoiceStepView` mostra o preço REAL de cada
+  método (via `resolvePaymentMethodPrice`, nunca texto digitado) e filtra
+  para métodos `ready` no público. `RuntimeState.selectedPaymentMethod`
+  (enum solto) vira `selectedPaymentMethodId` (identidade) — mesmo
+  princípio de `selectedOfferId` desde a Fase 4A.
+- **Gamification**: `selectedPaymentMethod` NÃO entra no
+  `GamificationContext` nesta fase — nenhuma regra nova o consome, nunca
+  inventa progresso por escolher pagar online.
+
 ## Testes
 
 ```bash
@@ -832,3 +936,34 @@ completo, CTA único sempre "continuar" — sem botão de desbloquear
 separado); e backward compatibility de ponta a ponta (funil V1/V2 antigo
 continua abrindo, navegando e criando pedido; V1→V3 e V2→V3 testados
 explicitamente, nenhuma versão publicada histórica é reescrita).
+
+Da Fase 4C: `resolvePaymentMethodPrice` (`NONE`/`FIXED_DISCOUNT`/
+`PERCENT_DISCOUNT`, arredondamento com `roundMoney`, desconto igual ao
+total dá zero exato, desconto maior que o total dá negativo — sem clamp,
+o caller decide; 100% de desconto dá zero exato; nunca duplica desconto —
+incide sobre o total já resolvido da oferta); `calculateOrderQuote`
+estendido (breakdown completo `subtotal`/`offerDiscount`/
+`paymentMethodDiscount`/`discountTotal`/`shippingTotal`/`total`, oferta
+`FIXED_TOTAL` + desconto de pagamento combinados corretamente, fail closed
+com `ValidationError` quando o total final fica `<= 0`, moeda
+zero-decimal); `isCheckoutProviderReady` (só `INTERNAL_COD` é `true`
+nesta fase); `paymentMethodPricingSchema`/`paymentChoiceStepConfigSchema`
+(amount negativo/percent zero ou acima de 100 rejeitados, IDs duplicados,
+nenhum método habilitado, `COD` com provider diferente de `INTERNAL_COD`
+e `ONLINE` com `INTERNAL_COD` sempre rejeitados, `recommendedMethodId`
+inexistente rejeitado); `computePaymentMethodWarnings` (aviso não-bloqueante
+só para método habilitado com provider não-ready); `prepareOnlineCheckout`
+(sempre `ok:false`, nunca lança); `migrateFunnelConfig` V3→V4 (`allowCod`/
+`allowOnlinePayment` viram métodos tipados preservando labels/descrições/
+`recommendedMethodId`, `allowCod=false` nunca inventa método COD,
+encadeamento `1→4` completo); `submitCheckout` (`selectedPaymentMethodId`
+inexistente/desabilitado/provider-não-ready sempre rejeitados, ONLINE
+nunca cria Order mesmo com payload forjado tentando injetar
+discount/total/percent/provider, `paymentMethodDiscount`/`checkoutProvider`
+persistidos corretamente, funil sem etapa PAYMENT_CHOICE sintetiza
+COD/INTERNAL_COD/NONE); `PaymentChoiceStepView` (público mostra só
+métodos `ready`, preview mostra todos com badge "No conectado", preço
+real por método, CONTINUAR bloqueado sem seleção explícita); e
+`PaymentChoiceEditor` (seletor de provider só pra ONLINE, preview local
+usando o mesmo `resolvePaymentMethodPrice` do servidor, trava de "ao
+menos um método ativo").

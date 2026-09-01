@@ -14,7 +14,7 @@ const runtimeStateSchema = z.object({
   completedStepIds: z.array(z.string()),
   selectedOfferId: z.string().nullable(),
   selectedQuantity: z.number().nullable(),
-  selectedPaymentMethod: z.enum(["COD", "ONLINE"]).nullable(),
+  selectedPaymentMethodId: z.string().nullable(),
   upsellAccepted: z.boolean().nullable(),
   checkoutAttemptId: z.string(),
   lastOrder: z

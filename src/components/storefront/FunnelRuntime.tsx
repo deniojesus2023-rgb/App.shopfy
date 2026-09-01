@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useReducer } from "react";
 
 import { evaluateGamification, type GamificationResult } from "@/modules/funnels/gamification/evaluate";
+import { resolveOfferPrice } from "@/modules/funnels/pricing/resolve-offer-price";
 import type { ResolvedFunnel } from "@/modules/funnels/runtime/resolve";
 import {
   clearRuntimeSession,
@@ -99,6 +100,21 @@ export function FunnelRuntime({
   const rewardStep = resolved.config.steps.find((s) => s.type === "REWARD" && s.enabled);
   const rewardConfig = rewardStep?.type === "REWARD" ? rewardStep.config : null;
 
+  const paymentChoiceStep = resolved.config.steps.find((s) => s.type === "PAYMENT_CHOICE" && s.enabled);
+  const paymentChoiceConfig = paymentChoiceStep?.type === "PAYMENT_CHOICE" ? paymentChoiceStep.config : null;
+
+  // Total da oferta SELECIONADA, antes do ajuste de método de pagamento —
+  // o que o PAYMENT_CHOICE step usa como base pra mostrar "quanto cada
+  // método desconta". Nunca adivinha uma oferta "provável" por posição no
+  // array quando nada foi selecionado ainda (mesmo princípio da Fase 4A
+  // para `defaultOfferId`) — cai no preço de 1 unidade do snapshot, igual
+  // ao comportamento de um funil sem etapa OFFER.
+  const selectedOffer = offers?.find((o) => o.id === state.selectedOfferId) ?? null;
+  const offerTotal = useMemo(() => {
+    if (selectedOffer) return resolveOfferPrice(resolved.snapshot.unitPrice, selectedOffer).total;
+    return resolveOfferPrice(resolved.snapshot.unitPrice, { quantity: 1, pricing: { type: "UNIT_MULTIPLIER" } }).total;
+  }, [selectedOffer, resolved.snapshot.unitPrice]);
+
   // Sempre RECALCULADO a partir do config + estado do runtime (Fase 4B) —
   // nunca uma "verdade" armazenada em RuntimeState/sessionStorage. O
   // pedido só é `orderConfirmed` depois que o Order local foi REALMENTE
@@ -133,6 +149,8 @@ export function FunnelRuntime({
           currency={resolved.currency}
           offerConfig={offerConfig}
           gamification={gamification ?? NO_REWARD_STEP_RESULT}
+          paymentChoiceConfig={paymentChoiceConfig}
+          offerTotal={offerTotal}
           upsellProduct={resolved.upsellProduct}
           hasNextStep={hasNextStep}
           funnelPublicId={resolved.funnel.publicId}
@@ -140,7 +158,7 @@ export function FunnelRuntime({
           callbacks={{
             onContinue: () => dispatch({ type: "NEXT_STEP", steps: resolved.config.steps }),
             onSelectOffer: (offerId, quantity) => dispatch({ type: "SELECT_OFFER", offerId, quantity }),
-            onSelectPaymentMethod: (method) => dispatch({ type: "SELECT_PAYMENT_METHOD", method }),
+            onSelectPaymentMethod: (paymentMethodId) => dispatch({ type: "SELECT_PAYMENT_METHOD", paymentMethodId }),
             onCodSubmitted: (order) => {
               dispatch({ type: "ORDER_CONFIRMED", order });
               dispatch({ type: "NEXT_STEP", steps: resolved.config.steps });

@@ -20,7 +20,11 @@ function paymentStep(id: string): FunnelStep {
     type: "PAYMENT_CHOICE",
     enabled: true,
     order: 1,
-    config: { allowCod: true, allowOnlinePayment: true, codLabel: "COD", onlinePaymentLabel: "Online" },
+    config: {
+      paymentMethods: [
+        { id: "cod", method: "COD", provider: "INTERNAL_COD", enabled: true, label: "COD", pricing: { type: "NONE" } },
+      ],
+    },
   };
 }
 

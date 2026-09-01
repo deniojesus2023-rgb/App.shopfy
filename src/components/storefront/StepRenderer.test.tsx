@@ -65,6 +65,8 @@ function renderStep(step: FunnelStep) {
       currency="COP"
       offerConfig={null}
       gamification={noRewardResult}
+      paymentChoiceConfig={null}
+      offerTotal={19.9}
       upsellProduct={null}
       hasNextStep={false}
       callbacks={noopCallbacks}
@@ -132,10 +134,10 @@ describe("StepRenderer — despacha os 7 tipos de etapa", () => {
       enabled: true,
       order: 0,
       config: {
-        allowCod: true,
-        allowOnlinePayment: false,
-        codLabel: "Pagar na entrega",
-        onlinePaymentLabel: "Pagar agora",
+        paymentMethods: [
+          { id: "cod", method: "COD", provider: "INTERNAL_COD", enabled: true, label: "Pagar na entrega", pricing: { type: "NONE" } },
+          { id: "online", method: "ONLINE", provider: "SHOPIFY_CHECKOUT", enabled: false, label: "Pagar agora", pricing: { type: "NONE" } },
+        ],
       },
     });
     expect(screen.getByText("Pagar na entrega")).toBeInTheDocument();

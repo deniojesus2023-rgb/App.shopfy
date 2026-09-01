@@ -68,13 +68,13 @@ export function validateFunnelSemantics(
 
   const codFormSteps = enabledStepsOfType(steps, "COD_FORM");
   if (codFormSteps.length > 0) {
-    const validPaymentChoice = enabledStepsOfType(steps, "PAYMENT_CHOICE").some(
-      (s) => s.config.allowCod
+    const validPaymentChoice = enabledStepsOfType(steps, "PAYMENT_CHOICE").some((s) =>
+      s.config.paymentMethods.some((m) => m.enabled && m.method === "COD")
     );
     if (!validPaymentChoice) {
       errors.push({
         path: "steps",
-        message: "COD_FORM exige uma etapa PAYMENT_CHOICE habilitada com allowCod=true.",
+        message: "COD_FORM exige uma etapa PAYMENT_CHOICE com um método COD habilitado.",
       });
     }
   }
@@ -90,14 +90,12 @@ export function validateFunnelSemantics(
     }
   }
 
-  for (const paymentStep of enabledStepsOfType(steps, "PAYMENT_CHOICE")) {
-    if (!paymentStep.config.allowCod && !paymentStep.config.allowOnlinePayment) {
-      errors.push({
-        path: `steps.${paymentStep.id}`,
-        message: "PAYMENT_CHOICE precisa permitir ao menos um método de pagamento.",
-      });
-    }
-  }
+  // "Ao menos um método habilitado" já é garantido estruturalmente pelo
+  // schema do step (paymentChoiceStepConfigSchema.refine) — não duplicado
+  // aqui. "Provider ainda não conectado" é avaliação de RUNTIME
+  // (isCheckoutProviderReady), não estrutural: fica em
+  // modules/funnels/payment/warnings.ts, só para o Builder, nunca bloqueia
+  // publish (spec Fase 4C item 25).
 
   const offerSteps = enabledStepsOfType(steps, "OFFER");
   const offerIds = new Set(offerSteps.flatMap((s) => s.config.offers.map((o) => o.id)));

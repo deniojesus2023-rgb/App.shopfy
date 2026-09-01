@@ -11,6 +11,7 @@ import { SuccessEditor } from "./editors/SuccessEditor";
 import { ThemeEditor } from "./editors/ThemeEditor";
 import { UpsellEditor } from "./editors/UpsellEditor";
 import type { FunnelStep } from "@/modules/funnels/config/steps";
+import { resolveOfferPrice } from "@/modules/funnels/pricing/resolve-offer-price";
 
 /**
  * Despacho único `step.type -> editor`, no mesmo espírito do StepRenderer
@@ -57,6 +58,10 @@ export function PropertiesPanel({
 
   const offerStep = state.draftConfig.steps.find((s) => s.type === "OFFER" && s.enabled);
   const offers = offerStep?.type === "OFFER" ? offerStep.config.offers : null;
+  // Só um valor de exemplo pro preview do PaymentChoiceEditor (primeira
+  // oferta, ou 1 unidade quando não há etapa OFFER) — nunca o total real
+  // de um pedido, que só o servidor calcula.
+  const sampleOfferTotal = resolveOfferPrice(unitPrice, offers?.[0] ?? { quantity: 1, pricing: { type: "UNIT_MULTIPLIER" } }).total;
 
   return (
     <div>
@@ -68,7 +73,9 @@ export function PropertiesPanel({
       {step.type === "OFFER" && (
         <OfferStepEditor config={step.config} unitPrice={unitPrice} currency={currency} onChange={onChangeConfig} />
       )}
-      {step.type === "PAYMENT_CHOICE" && <PaymentChoiceEditor config={step.config} onChange={onChangeConfig} />}
+      {step.type === "PAYMENT_CHOICE" && (
+        <PaymentChoiceEditor config={step.config} sampleOfferTotal={sampleOfferTotal} currency={currency} onChange={onChangeConfig} />
+      )}
       {step.type === "COD_FORM" && <CodFormEditor config={step.config} onChange={onChangeConfig} />}
       {step.type === "SUCCESS" && <SuccessEditor config={step.config} onChange={onChangeConfig} />}
       {step.type === "UPSELL" && (

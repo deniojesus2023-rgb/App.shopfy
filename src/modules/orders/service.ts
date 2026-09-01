@@ -6,8 +6,9 @@ import { prisma } from "@/lib/db";
 import { logAudit } from "@/modules/audit/service";
 import { enqueueJobInTx } from "@/modules/queue/service";
 import { NotFoundError, ValidationError } from "@/modules/shared/errors";
+import { isCheckoutProviderReady } from "../funnels/config/checkout-provider";
 import { parseFunnelConfig } from "../funnels/config/parse";
-import type { CodFormStepConfig, OfferItem } from "../funnels/config/steps";
+import type { CodFormStepConfig, OfferItem, PaymentMethodConfig } from "../funnels/config/steps";
 import { calculateOrderQuote } from "./pricing";
 import { normalizePhone, normalizeText } from "./normalize";
 import { generateOrderPublicId } from "./public-id";
@@ -64,16 +65,45 @@ export async function submitCheckout(input: SubmitCheckoutInput): Promise<Submit
 
   const config = parseFunnelConfig(version.configSchemaVersion, version.config);
 
-  if (input.selectedPaymentMethod !== "COD") {
-    // Spec item 5/30: ONLINE nunca finaliza transação real nesta fase —
-    // nunca fingir pagamento. O client já deveria ter bloqueado isto antes
-    // de chamar o endpoint; isto é a defesa de servidor.
-    throw new ValidationError("El pago en línea aún no está disponible. Elige pago contra entrega.");
+  // O método de pagamento (identidade + provider + regra de preço) vem
+  // sempre do config PUBLICADO, nunca do client (Fase 4C item 10/24):
+  // `selectedPaymentMethodId` só aponta qual deles, method/provider/
+  // pricing são resolvidos aqui. Sem etapa PAYMENT_CHOICE habilitada, é
+  // sempre um "método sintético" COD/INTERNAL_COD/NONE — preserva o
+  // comportamento anterior à Fase 4C para funis sem essa etapa.
+  const paymentChoiceStep = config.steps.find((s) => s.type === "PAYMENT_CHOICE" && s.enabled);
+  let paymentMethod: PaymentMethodConfig;
+  if (paymentChoiceStep && paymentChoiceStep.type === "PAYMENT_CHOICE") {
+    const found = paymentChoiceStep.config.paymentMethods.find((m) => m.id === input.selectedPaymentMethodId);
+    if (!found) {
+      throw new ValidationError("Método de pago inválido.");
+    }
+    paymentMethod = found;
+  } else {
+    paymentMethod = {
+      id: "__default_cod__",
+      method: "COD",
+      provider: "INTERNAL_COD",
+      enabled: true,
+      label: "",
+      pricing: { type: "NONE" },
+    };
   }
 
-  const paymentStep = config.steps.find((s) => s.type === "PAYMENT_CHOICE" && s.enabled);
-  if (paymentStep && paymentStep.type === "PAYMENT_CHOICE" && !paymentStep.config.allowCod) {
-    throw new ValidationError("El pago contra entrega no está disponible para este funil.");
+  if (!paymentMethod.enabled) {
+    throw new ValidationError("Este método de pago no está disponible para este funil.");
+  }
+  // Fail closed (spec item 20): um provider sem integração ativa nunca
+  // pode gerar um pedido, mesmo que o client tenha forjado o payload para
+  // apontar pra ele — independente do que a config diz que está habilitado.
+  if (!isCheckoutProviderReady(paymentMethod.provider)) {
+    throw new ValidationError("Este método de pago aún no está disponible.");
+  }
+  // Nesta fase, só COD/INTERNAL_COD cria um Order de verdade (spec item
+  // 18/19) — ONLINE nunca finaliza transação real, mesmo que um provider
+  // futuro venha a ficar "ready" antes de a integração de fato existir.
+  if (paymentMethod.method !== "COD" || paymentMethod.provider !== "INTERNAL_COD") {
+    throw new ValidationError("El pago en línea aún no está disponible. Elige pago contra entrega.");
   }
 
   const codFormStep = config.steps.find((s) => s.type === "COD_FORM" && s.enabled);
@@ -118,6 +148,7 @@ export async function submitCheckout(input: SubmitCheckoutInput): Promise<Submit
       sku: version.productSnapshot.sku,
     },
     offer,
+    paymentMethodPricing: paymentMethod.pricing,
     currency: shopifyStore?.currency ?? "COP",
   });
 
@@ -136,6 +167,8 @@ export async function submitCheckout(input: SubmitCheckoutInput): Promise<Submit
       funnelVersionId: version.id,
       idempotencyKey,
       currency: quote.currency,
+      // Já validado acima: só chega aqui method=COD/provider=INTERNAL_COD.
+      checkoutProvider: paymentMethod.provider,
       quote,
       leadData,
     });
@@ -199,6 +232,7 @@ interface CreateOrderTransactionInput {
   funnelVersionId: string;
   idempotencyKey: string;
   currency: string;
+  checkoutProvider: "INTERNAL_COD";
   quote: ReturnType<typeof calculateOrderQuote>;
   leadData: Record<string, string | undefined>;
 }
@@ -234,9 +268,11 @@ async function createOrderTransaction(input: CreateOrderTransactionInput) {
         idempotencyKey: input.idempotencyKey,
         status: "PENDING",
         paymentMethod: "COD",
+        checkoutProvider: input.checkoutProvider,
         currency: input.currency,
         subtotal: input.quote.subtotal,
         discountTotal: input.quote.discountTotal,
+        paymentMethodDiscount: input.quote.paymentMethodDiscount,
         shippingTotal: input.quote.shippingTotal,
         total: input.quote.total,
       },

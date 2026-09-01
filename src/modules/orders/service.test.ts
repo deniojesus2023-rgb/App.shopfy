@@ -47,9 +47,11 @@ interface FakeOrder {
   idempotencyKey: string;
   status: string;
   paymentMethod: string;
+  checkoutProvider: string;
   currency: string;
   subtotal: number;
   discountTotal: number;
+  paymentMethodDiscount: number;
   shippingTotal: number;
   total: Prisma.Decimal;
 }
@@ -188,6 +190,18 @@ function paymentStep(allowCod = true) {
     config: { allowCod, allowOnlinePayment: true, codLabel: "COD", onlinePaymentLabel: "Online" },
   };
 }
+// Shape V4 direto (Fase 4C) — usado nos testes que precisam de
+// paymentMethods/pricing reais, que o shape legado V1 (paymentStep acima)
+// não consegue expressar.
+function paymentStepV4(paymentMethods: unknown[], recommendedMethodId?: string) {
+  return {
+    id: "payment",
+    type: "PAYMENT_CHOICE" as const,
+    enabled: true,
+    order: 2,
+    config: { paymentMethods, recommendedMethodId },
+  };
+}
 function codFormStep(required: Array<"NAME" | "PHONE" | "COUNTRY" | "STATE" | "CITY" | "ADDRESS"> = [
   "NAME",
   "PHONE",
@@ -269,12 +283,48 @@ function seedPublishedFunnel(overrides: { steps?: unknown[] } = {}) {
   return { funnel, version };
 }
 
+function seedPublishedFunnelV4(steps: unknown[]) {
+  const funnel: FakeFunnel = {
+    id: "funnel_1",
+    workspaceId: "ws_1",
+    shopifyStoreId: "store_1",
+    status: "PUBLISHED",
+    publishedVersionId: "version_1",
+  };
+  const version: FakeVersion = {
+    id: "version_1",
+    funnelId: "funnel_1",
+    configSchemaVersion: 4,
+    config: { schemaVersion: 4, theme, steps, settings: {} },
+    status: "PUBLISHED",
+    supersededAt: null,
+    productSnapshot: {
+      title: "Produto X",
+      featuredImageUrl: null,
+      unitPrice: new Prisma.Decimal(100),
+      compareAtPrice: null,
+      productId: "prod_1",
+      productVariantId: "pv_1",
+      shopifyProductId: "gid://shopify/Product/1",
+      shopifyVariantId: "gid://shopify/ProductVariant/42",
+      variantTitle: "Default",
+      sku: "SKU-1",
+    },
+  };
+  funnels.push(funnel);
+  versions.push(version);
+  stores.push({ id: "store_1", currency: "COP" });
+  return { funnel, version };
+}
+
 function baseInput(overrides: Partial<Parameters<typeof submitCheckout>[0]> = {}) {
   return {
     funnelPublicId: "funnel_1",
     funnelVersionId: "version_1",
     checkoutAttemptId: "attempt-1",
-    selectedPaymentMethod: "COD" as const,
+    // Id sintetizado pela migração V3->V4 (Fase 4C) a partir de
+    // allowCod=true — ver migrate.ts.
+    selectedPaymentMethodId: "cod",
     customer: validCustomer,
     ...overrides,
   };
@@ -339,10 +389,92 @@ describe("submitCheckout — autoridade do servidor", () => {
     await expect(submitCheckout(baseInput())).rejects.toThrow();
   });
 
-  it("rejeita selectedPaymentMethod=ONLINE (não finaliza transação real ainda)", async () => {
+  it("rejeita seleção de método ONLINE (não finaliza transação real ainda)", async () => {
     seedPublishedFunnel();
-    await expect(submitCheckout(baseInput({ selectedPaymentMethod: "ONLINE" }))).rejects.toThrow();
+    await expect(submitCheckout(baseInput({ selectedPaymentMethodId: "online" }))).rejects.toThrow();
     expect(orders).toHaveLength(0);
+  });
+
+  it("rejeita selectedPaymentMethodId inexistente", async () => {
+    seedPublishedFunnel();
+    await expect(submitCheckout(baseInput({ selectedPaymentMethodId: "nao-existe" }))).rejects.toThrow();
+    expect(orders).toHaveLength(0);
+  });
+
+  it("rejeita método desabilitado mesmo que o id exista no config", async () => {
+    seedPublishedFunnelV4([
+      productStep(),
+      successStep(),
+      paymentStepV4([
+        { id: "cod", method: "COD", provider: "INTERNAL_COD", enabled: false, label: "COD", pricing: { type: "NONE" } },
+        { id: "online", method: "ONLINE", provider: "SHOPIFY_CHECKOUT", enabled: true, label: "Online", pricing: { type: "NONE" } },
+      ]),
+      codFormStep(),
+    ]);
+    await expect(submitCheckout(baseInput({ selectedPaymentMethodId: "cod" }))).rejects.toThrow();
+    expect(orders).toHaveLength(0);
+  });
+
+  it("rejeita provider ainda não conectado mesmo que method=COD (fail closed independente do que a config diz)", async () => {
+    // Cenário adversarial: um provider hipotético não-INTERNAL_COD nunca
+    // deveria existir com method=COD (bloqueado estruturalmente), mas a
+    // checagem de isCheckoutProviderReady é uma segunda trava
+    // independente — testa que ONLINE nunca passa mesmo com enabled=true.
+    seedPublishedFunnelV4([
+      productStep(),
+      successStep(),
+      paymentStepV4([
+        { id: "online", method: "ONLINE", provider: "YAMPI", enabled: true, label: "Yampi", pricing: { type: "NONE" } },
+      ]),
+      codFormStep(),
+    ]);
+    await expect(submitCheckout(baseInput({ selectedPaymentMethodId: "online" }))).rejects.toThrow();
+    expect(orders).toHaveLength(0);
+  });
+
+  it("client não consegue forjar desconto/total/percent — o servidor sempre recalcula do config publicado", async () => {
+    seedPublishedFunnelV4([
+      productStep(),
+      successStep(),
+      paymentStepV4([
+        { id: "cod", method: "COD", provider: "INTERNAL_COD", enabled: true, label: "COD", pricing: { type: "FIXED_DISCOUNT", amount: 20 } },
+      ]),
+      codFormStep(),
+    ]);
+    // "Payload bruto" tentando injetar campos financeiros que não existem
+    // no schema (bypass de tipo) — devem ser ignorados silenciosamente.
+    const result = await submitCheckout(
+      baseInput({
+        selectedPaymentMethodId: "cod",
+        ...({ discount: 99999, total: 1, percent: 100, provider: "YAMPI" } as object),
+      })
+    );
+    // unitPrice do snapshot é 100, FIXED_DISCOUNT de 20 → total real 80.
+    expect(Number(result.total)).toBe(80);
+    expect(orders[0].paymentMethodDiscount).toBe(20);
+  });
+
+  it("COD com FIXED_DISCOUNT cria o Order com paymentMethodDiscount e checkoutProvider persistidos", async () => {
+    seedPublishedFunnelV4([
+      productStep(),
+      successStep(),
+      paymentStepV4([
+        { id: "cod", method: "COD", provider: "INTERNAL_COD", enabled: true, label: "COD", pricing: { type: "FIXED_DISCOUNT", amount: 10 } },
+      ]),
+      codFormStep(),
+    ]);
+    await submitCheckout(baseInput({ selectedPaymentMethodId: "cod" }));
+    expect(orders[0].checkoutProvider).toBe("INTERNAL_COD");
+    expect(orders[0].paymentMethodDiscount).toBe(10);
+    expect(Number(orders[0].total)).toBe(90);
+  });
+
+  it("sem etapa PAYMENT_CHOICE, sintetiza método COD/INTERNAL_COD/NONE (mesmo comportamento anterior à Fase 4C)", async () => {
+    seedPublishedFunnel({ steps: [productStep(), successStep(), codFormStep()] });
+    const result = await submitCheckout(baseInput());
+    expect(Number(result.total)).toBe(100);
+    expect(orders[0].checkoutProvider).toBe("INTERNAL_COD");
+    expect(orders[0].paymentMethodDiscount).toBe(0);
   });
 
   it("rejeita oferta inválida (não configurada no funil)", async () => {

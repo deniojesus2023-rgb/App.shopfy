@@ -44,7 +44,7 @@ function baseState(overrides: Partial<RuntimeState> = {}): RuntimeState {
     completedStepIds: [],
     selectedOfferId: null,
     selectedQuantity: null,
-    selectedPaymentMethod: null,
+    selectedPaymentMethodId: null,
     upsellAccepted: null,
     checkoutAttemptId: "attempt_1",
     lastOrder: null,
@@ -140,9 +140,9 @@ describe("runtimeReducer — seleções", () => {
     expect(result.selectedQuantity).toBe(2);
   });
 
-  it("SELECT_PAYMENT_METHOD atualiza o método escolhido", () => {
-    const result = runtimeReducer(baseState(), { type: "SELECT_PAYMENT_METHOD", method: "COD" });
-    expect(result.selectedPaymentMethod).toBe("COD");
+  it("SELECT_PAYMENT_METHOD atualiza o método escolhido (identidade, não enum)", () => {
+    const result = runtimeReducer(baseState(), { type: "SELECT_PAYMENT_METHOD", paymentMethodId: "cod" });
+    expect(result.selectedPaymentMethodId).toBe("cod");
   });
 
   it("ACCEPT_UPSELL / DECLINE_UPSELL setam upsellAccepted", () => {

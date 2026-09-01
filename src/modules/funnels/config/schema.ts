@@ -1,7 +1,7 @@
 import { z } from "zod";
 
 import { funnelThemeSchema } from "./theme";
-import { funnelStepSchema, funnelStepSchemaV1, funnelStepSchemaV2 } from "./steps";
+import { funnelStepSchema, funnelStepSchemaV1, funnelStepSchemaV2, funnelStepSchemaV3 } from "./steps";
 
 // Placeholder deliberadamente mínimo — cresce em fases futuras (analytics,
 // idioma, moeda). Fechado (não `.passthrough()`): nenhuma chave arbitrária.
@@ -36,24 +36,38 @@ export const funnelConfigV2Schema = z.object({
 
 export type FunnelConfigV2 = z.infer<typeof funnelConfigV2Schema>;
 
-// V3 (atual, Fase 4B) — REWARD carrega uma regra real de progresso
-// (GamificationProgressRule) e uma recompensa tipada, avaliadas por
-// evaluateGamification() — nunca mais um percentual/valor digitado.
+// V3 (legado, Fase 4B) — REWARD carrega uma regra real de progresso, mas
+// PAYMENT_CHOICE ainda é allowCod/allowOnlinePayment, sem provider nem
+// regra de preço por método. Nunca usado fora de config/parse.ts — uma
+// FunnelVersion PUBLISHED entre a Fase 4B e a Fase 4C continua com este
+// shape no banco para sempre — nunca reescrita.
 export const funnelConfigV3Schema = z.object({
   schemaVersion: z.literal(3),
   theme: funnelThemeSchema,
-  steps: z.array(funnelStepSchema).min(1).max(20),
+  steps: z.array(funnelStepSchemaV3).min(1).max(20),
   settings: funnelSettingsSchema,
 });
 
 export type FunnelConfigV3 = z.infer<typeof funnelConfigV3Schema>;
 
+// V4 (atual, Fase 4C) — PAYMENT_CHOICE carrega `paymentMethods` tipados
+// (método + provider + regra de preço por método), avaliados por
+// resolvePaymentMethodPrice() — nunca mais um desconto exibido como texto.
+export const funnelConfigV4Schema = z.object({
+  schemaVersion: z.literal(4),
+  theme: funnelThemeSchema,
+  steps: z.array(funnelStepSchema).min(1).max(20),
+  settings: funnelSettingsSchema,
+});
+
+export type FunnelConfigV4 = z.infer<typeof funnelConfigV4Schema>;
+
 // Alias da versão corrente — é isto que todo código fora de
 // config/parse.ts e config/migrate.ts deve importar (`FunnelConfig`), já
 // que `parseFunnelConfig` sempre migra e devolve este shape.
-export type FunnelConfig = FunnelConfigV3;
+export type FunnelConfig = FunnelConfigV4;
 
-export const CURRENT_FUNNEL_CONFIG_SCHEMA_VERSION = 3;
+export const CURRENT_FUNNEL_CONFIG_SCHEMA_VERSION = 4;
 
 export * from "./theme";
 export * from "./steps";

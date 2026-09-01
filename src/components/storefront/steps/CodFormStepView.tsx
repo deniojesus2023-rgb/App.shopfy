@@ -66,6 +66,7 @@ export function CodFormStepView({
   funnelVersionId,
   checkoutAttemptId,
   selectedPaymentMethod,
+  selectedPaymentMethodId,
   selectedOfferId,
   isPreview = false,
 }: {
@@ -75,7 +76,10 @@ export function CodFormStepView({
   funnelPublicId: string;
   funnelVersionId: string;
   checkoutAttemptId: string;
+  /** Método resolvido (COD/ONLINE) — só pra gate de UI, nunca enviado ao servidor. */
   selectedPaymentMethod: "COD" | "ONLINE" | null;
+  /** Identidade do PaymentMethodConfig — o que de fato vai no POST (Fase 4C). */
+  selectedPaymentMethodId: string | null;
   selectedOfferId: string | null;
   isPreview?: boolean;
 }) {
@@ -135,7 +139,7 @@ export function CodFormStepView({
           funnelPublicId,
           funnelVersionId,
           checkoutAttemptId,
-          selectedPaymentMethod: "COD",
+          selectedPaymentMethodId: selectedPaymentMethodId ?? undefined,
           selectedOfferId: selectedOfferId ?? undefined,
           customer,
         }),

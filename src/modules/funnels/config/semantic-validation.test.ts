@@ -43,16 +43,17 @@ function successStep(overrides: Partial<{ id: string; order: number; enabled: bo
 function paymentChoiceStep(
   overrides: Partial<{ id: string; order: number; enabled: boolean; allowCod: boolean }> = {}
 ) {
+  const allowCod = overrides.allowCod ?? true;
   return {
     id: overrides.id ?? "payment",
     type: "PAYMENT_CHOICE" as const,
     enabled: overrides.enabled ?? true,
     order: overrides.order ?? 2,
     config: {
-      allowCod: overrides.allowCod ?? true,
-      allowOnlinePayment: true,
-      codLabel: "COD",
-      onlinePaymentLabel: "Online",
+      paymentMethods: [
+        { id: "cod", method: "COD" as const, provider: "INTERNAL_COD" as const, enabled: allowCod, label: "COD", pricing: { type: "NONE" as const } },
+        { id: "online", method: "ONLINE" as const, provider: "SHOPIFY_CHECKOUT" as const, enabled: true, label: "Online", pricing: { type: "NONE" as const } },
+      ],
     },
   };
 }
@@ -123,7 +124,7 @@ function upsellStep(overrides: Partial<{ id: string; order: number; enabled: boo
 }
 
 function config(steps: FunnelConfig["steps"]): FunnelConfig {
-  return { schemaVersion: 3, theme, steps, settings: {} };
+  return { schemaVersion: 4, theme, steps, settings: {} };
 }
 
 const baseContext = { workspaceId: "ws_1", shopifyStoreId: "store_1" };

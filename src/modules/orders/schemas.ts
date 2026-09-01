@@ -14,7 +14,12 @@ export const submitCheckoutSchema = z.object({
   // servidor deriva `quantity` da oferta publicada correspondente,
   // ignorando qualquer valor que o client pudesse enviar.
   selectedOfferId: z.string().max(64).optional(),
-  selectedPaymentMethod: z.enum(["COD", "ONLINE"]),
+  // Só a identidade do método de pagamento — nunca method/provider/
+  // desconto vindos do client (Fase 4C item 10): o servidor resolve tudo
+  // isso a partir do config publicado. Sem etapa PAYMENT_CHOICE habilitada,
+  // o servidor sintetiza um método COD/INTERNAL_COD default (mesmo padrão
+  // já usado para selectedOfferId sem etapa OFFER).
+  selectedPaymentMethodId: z.string().max(64).optional(),
   customer: z.object({
     name: customerFieldSchema.optional(),
     phone: customerFieldSchema.optional(),

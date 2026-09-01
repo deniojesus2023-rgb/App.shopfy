@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { funnelConfigV1Schema, funnelConfigV2Schema, funnelConfigV3Schema } from "./schema";
+import { funnelConfigV1Schema, funnelConfigV2Schema, funnelConfigV3Schema, funnelConfigV4Schema } from "./schema";
 import { parseFunnelConfig } from "./parse";
 import { PROGRESS_REWARD_COD_TEMPLATE } from "./seed-templates";
 
@@ -18,9 +18,34 @@ function baseConfig(steps: unknown[]) {
   return { schemaVersion: 1, theme: validTheme, steps, settings: {} };
 }
 
-describe("funnelConfigV3Schema — template atual", () => {
-  it("aceita o template seed válido (V3, REWARD com regra real)", () => {
-    expect(funnelConfigV3Schema.safeParse(PROGRESS_REWARD_COD_TEMPLATE.defaultConfig).success).toBe(true);
+describe("funnelConfigV4Schema — template atual", () => {
+  it("aceita o template seed válido (V4, PAYMENT_CHOICE com paymentMethods reais)", () => {
+    expect(funnelConfigV4Schema.safeParse(PROGRESS_REWARD_COD_TEMPLATE.defaultConfig).success).toBe(true);
+  });
+});
+
+// Shape v3 de verdade (Fase 4B): REWARD já com regra real, mas
+// PAYMENT_CHOICE ainda allowCod/allowOnlinePayment — exatamente o que uma
+// FunnelVersion PUBLISHED entre a Fase 4B e a Fase 4C tem gravado no banco.
+const legacyV3Config = {
+  schemaVersion: 3,
+  theme: validTheme,
+  settings: {},
+  steps: [
+    successStep("s", 0),
+    {
+      id: "p",
+      type: "PAYMENT_CHOICE",
+      enabled: true,
+      order: 1,
+      config: { allowCod: true, allowOnlinePayment: false, codLabel: "COD", onlinePaymentLabel: "Online" },
+    },
+  ],
+};
+
+describe("funnelConfigV3Schema — estrutura legada (Fase 4B)", () => {
+  it("aceita config v3 de verdade (REWARD com regra real, PAYMENT_CHOICE ainda allowCod/allowOnlinePayment)", () => {
+    expect(funnelConfigV3Schema.safeParse(legacyV3Config).success).toBe(true);
   });
 });
 
@@ -288,15 +313,26 @@ const legacyV1Config = {
 };
 
 describe("parseFunnelConfig", () => {
-  it("retorna o config tipado para configSchemaVersion 3 (atual)", () => {
-    const result = parseFunnelConfig(3, PROGRESS_REWARD_COD_TEMPLATE.defaultConfig);
-    expect(result.schemaVersion).toBe(3);
+  it("retorna o config tipado para configSchemaVersion 4 (atual)", () => {
+    const result = parseFunnelConfig(4, PROGRESS_REWARD_COD_TEMPLATE.defaultConfig);
+    expect(result.schemaVersion).toBe(4);
     expect(result.steps.length).toBeGreaterThan(0);
   });
 
-  it("migra configSchemaVersion 2 para o shape atual (V3) em memória — REWARD ganha regra real", () => {
+  it("migra configSchemaVersion 3 para o shape atual (V4) em memória — PAYMENT_CHOICE ganha paymentMethods reais", () => {
+    const result = parseFunnelConfig(3, legacyV3Config);
+    expect(result.schemaVersion).toBe(4);
+    const paymentStep = result.steps.find((s) => s.type === "PAYMENT_CHOICE");
+    expect(paymentStep?.type).toBe("PAYMENT_CHOICE");
+    if (paymentStep?.type === "PAYMENT_CHOICE") {
+      const cod = paymentStep.config.paymentMethods.find((m) => m.method === "COD");
+      expect(cod).toMatchObject({ provider: "INTERNAL_COD", enabled: true, pricing: { type: "NONE" } });
+    }
+  });
+
+  it("migra configSchemaVersion 2 para o shape atual (V4) em memória, encadeando 2->3->4 — REWARD ganha regra real", () => {
     const result = parseFunnelConfig(2, legacyV2Config);
-    expect(result.schemaVersion).toBe(3);
+    expect(result.schemaVersion).toBe(4);
     const rewardStep = result.steps.find((s) => s.type === "REWARD");
     expect(rewardStep?.type).toBe("REWARD");
     if (rewardStep?.type === "REWARD") {
@@ -307,9 +343,9 @@ describe("parseFunnelConfig", () => {
     }
   });
 
-  it("migra configSchemaVersion 1 para o shape atual (V3) em memória, encadeando 1->2->3", () => {
+  it("migra configSchemaVersion 1 para o shape atual (V4) em memória, encadeando 1->2->3->4", () => {
     const result = parseFunnelConfig(1, legacyV1Config);
-    expect(result.schemaVersion).toBe(3);
+    expect(result.schemaVersion).toBe(4);
     const offerStep = result.steps.find((s) => s.type === "OFFER");
     expect(offerStep?.type).toBe("OFFER");
     if (offerStep?.type === "OFFER") {
@@ -331,5 +367,9 @@ describe("parseFunnelConfig", () => {
 
   it("lança ValidationError para config v3 estruturalmente inválido", () => {
     expect(() => parseFunnelConfig(3, { schemaVersion: 3 })).toThrow();
+  });
+
+  it("lança ValidationError para config v4 estruturalmente inválido", () => {
+    expect(() => parseFunnelConfig(4, { schemaVersion: 4 })).toThrow();
   });
 });

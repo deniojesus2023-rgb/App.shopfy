@@ -35,6 +35,7 @@ const baseProps = {
   checkoutAttemptId: "attempt-1",
   selectedOfferId: null,
   selectedPaymentMethod: "COD" as const,
+  selectedPaymentMethodId: "cod",
 };
 
 const okOrder: OrderConfirmation = { publicOrderId: "pub-order", orderNumber: 1048, status: "PENDING", total: "89900.00", currency: "COP" };
@@ -103,7 +104,7 @@ describe("CodFormStepView — submit real (Fase 3)", () => {
       funnelPublicId: "pub1",
       funnelVersionId: "cversion0000000000000001",
       checkoutAttemptId: "attempt-1",
-      selectedPaymentMethod: "COD",
+      selectedPaymentMethodId: "cod",
     });
     // Nunca inventa preço/total no client — o servidor é a autoridade.
     expect(body).not.toHaveProperty("total");

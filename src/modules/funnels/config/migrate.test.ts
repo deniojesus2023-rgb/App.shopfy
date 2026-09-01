@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { migrateFunnelConfig } from "./migrate";
-import { funnelConfigV1Schema, funnelConfigV2Schema, funnelConfigV3Schema } from "./schema";
+import { funnelConfigV1Schema, funnelConfigV2Schema, funnelConfigV3Schema, funnelConfigV4Schema } from "./schema";
 
 const theme = {
   primaryColor: "#111827",
@@ -88,7 +88,7 @@ describe("migrateFunnelConfig — V1 -> V2", () => {
   });
 
   it("versão sem migração registrada lança erro explícito", () => {
-    expect(() => migrateFunnelConfig(3, 4, {})).toThrow(/Não existe migração registrada/);
+    expect(() => migrateFunnelConfig(4, 5, {})).toThrow(/Não existe migração registrada/);
   });
 });
 
@@ -182,6 +182,110 @@ describe("migrateFunnelConfig — V2 -> V3", () => {
     const migrated = migrateFunnelConfig(1, 3, legacyConfig()) as { schemaVersion: number };
     expect(migrated.schemaVersion).toBe(3);
     const parsed = funnelConfigV3Schema.parse(migrated);
+    const offerStep = parsed.steps.find((s) => s.type === "OFFER");
+    if (offerStep?.type === "OFFER") {
+      expect(offerStep.config.offers[0].pricing).toEqual({ type: "UNIT_MULTIPLIER" });
+    }
+  });
+});
+
+function legacyV3Config(overrides: { allowCod?: boolean; allowOnlinePayment?: boolean; recommendedMethod?: "COD" | "ONLINE" } = {}) {
+  return funnelConfigV3Schema.parse({
+    schemaVersion: 3,
+    theme,
+    settings: {},
+    steps: [
+      {
+        id: "success",
+        type: "SUCCESS",
+        enabled: true,
+        order: 0,
+        config: { title: "Sucesso", showOrderNumber: true, showRewardProgress: false },
+      },
+      {
+        id: "payment",
+        type: "PAYMENT_CHOICE",
+        enabled: true,
+        order: 1,
+        config: {
+          allowCod: overrides.allowCod ?? true,
+          allowOnlinePayment: overrides.allowOnlinePayment ?? true,
+          codLabel: "Pagar na entrega",
+          onlinePaymentLabel: "Pagar agora",
+          codDescription: "Pague em dinheiro.",
+          onlinePaymentDescription: "Pague com cartão.",
+          recommendedMethod: overrides.recommendedMethod,
+        },
+      },
+    ],
+  });
+}
+
+describe("migrateFunnelConfig — V3 -> V4", () => {
+  it("allowCod=true vira método COD/INTERNAL_COD/pricing NONE", () => {
+    const migrated = migrateFunnelConfig(3, 4, legacyV3Config());
+    const parsed = funnelConfigV4Schema.parse(migrated);
+    const paymentStep = parsed.steps.find((s) => s.type === "PAYMENT_CHOICE");
+    if (paymentStep?.type === "PAYMENT_CHOICE") {
+      const cod = paymentStep.config.paymentMethods.find((m) => m.method === "COD");
+      expect(cod).toMatchObject({ id: "cod", provider: "INTERNAL_COD", enabled: true, pricing: { type: "NONE" } });
+    }
+  });
+
+  it("allowOnlinePayment=true vira método ONLINE/SHOPIFY_CHECKOUT/pricing NONE, mas nunca pronto de verdade", () => {
+    const migrated = migrateFunnelConfig(3, 4, legacyV3Config());
+    const parsed = funnelConfigV4Schema.parse(migrated);
+    const paymentStep = parsed.steps.find((s) => s.type === "PAYMENT_CHOICE");
+    if (paymentStep?.type === "PAYMENT_CHOICE") {
+      const online = paymentStep.config.paymentMethods.find((m) => m.method === "ONLINE");
+      expect(online).toMatchObject({ id: "online", provider: "SHOPIFY_CHECKOUT", enabled: true, pricing: { type: "NONE" } });
+    }
+  });
+
+  it("allowCod=false não gera método COD nenhum (nunca inventa provider ativo)", () => {
+    const migrated = migrateFunnelConfig(3, 4, legacyV3Config({ allowCod: false }));
+    const parsed = funnelConfigV4Schema.parse(migrated);
+    const paymentStep = parsed.steps.find((s) => s.type === "PAYMENT_CHOICE");
+    if (paymentStep?.type === "PAYMENT_CHOICE") {
+      expect(paymentStep.config.paymentMethods.some((m) => m.method === "COD")).toBe(false);
+    }
+  });
+
+  it("recommendedMethod migra para recommendedMethodId correspondente", () => {
+    const migrated = migrateFunnelConfig(3, 4, legacyV3Config({ recommendedMethod: "COD" }));
+    const parsed = funnelConfigV4Schema.parse(migrated);
+    const paymentStep = parsed.steps.find((s) => s.type === "PAYMENT_CHOICE");
+    if (paymentStep?.type === "PAYMENT_CHOICE") {
+      expect(paymentStep.config.recommendedMethodId).toBe("cod");
+    }
+  });
+
+  it("preserva labels e descrições originais", () => {
+    const migrated = migrateFunnelConfig(3, 4, legacyV3Config());
+    const parsed = funnelConfigV4Schema.parse(migrated);
+    const paymentStep = parsed.steps.find((s) => s.type === "PAYMENT_CHOICE");
+    if (paymentStep?.type === "PAYMENT_CHOICE") {
+      const cod = paymentStep.config.paymentMethods.find((m) => m.method === "COD");
+      expect(cod).toMatchObject({ label: "Pagar na entrega", description: "Pague em dinheiro." });
+    }
+  });
+
+  it("não altera etapas que não são PAYMENT_CHOICE", () => {
+    const migrated = migrateFunnelConfig(3, 4, legacyV3Config());
+    const parsed = funnelConfigV4Schema.parse(migrated);
+    const successStep = parsed.steps.find((s) => s.type === "SUCCESS");
+    expect(successStep?.config).toMatchObject({ title: "Sucesso" });
+  });
+
+  it("atualiza schemaVersion para 4", () => {
+    const migrated = migrateFunnelConfig(3, 4, legacyV3Config()) as { schemaVersion: number };
+    expect(migrated.schemaVersion).toBe(4);
+  });
+
+  it("encadeia 1 -> 4 automaticamente (V1 -> V2 -> V3 -> V4 numa chamada só)", () => {
+    const migrated = migrateFunnelConfig(1, 4, legacyConfig()) as { schemaVersion: number };
+    expect(migrated.schemaVersion).toBe(4);
+    const parsed = funnelConfigV4Schema.parse(migrated);
     const offerStep = parsed.steps.find((s) => s.type === "OFFER");
     if (offerStep?.type === "OFFER") {
       expect(offerStep.config.offers[0].pricing).toEqual({ type: "UNIT_MULTIPLIER" });
