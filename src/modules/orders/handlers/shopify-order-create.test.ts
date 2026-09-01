@@ -11,7 +11,7 @@ interface FakeOrder {
   shopifyOrderId: string | null;
   shopifyOrderName?: string | null;
   shopifySyncStatus: string;
-  codLead: { name: string; phone: string; address: string; city: string; state: string; country: string };
+  codLead: { name: string; phone: string; address: string; city: string; state: string; country: string } | null;
   items: Array<{
     titleSnapshot: string;
     shopifyVariantId: string | null;
@@ -468,5 +468,14 @@ describe("processShopifyOrderCreateJob — falhas terminais", () => {
     expect(createShopifyOrderMock).not.toHaveBeenCalled();
     expect(findShopifyOrdersBySourceIdentifierMock).not.toHaveBeenCalled();
     expect(orders[0].shopifySyncStatus).toBe("FAILED");
+  });
+});
+
+describe("processShopifyOrderCreateJob — fluxo ONLINE nunca passa por aqui (Fase 4D)", () => {
+  it("Order sem CodLead falha fechado, sem tentar criar pedido na Shopify", async () => {
+    seedOrder({ codLead: null });
+
+    await expect(run()).rejects.toThrow(/CodLead/);
+    expect(createShopifyOrderMock).not.toHaveBeenCalled();
   });
 });

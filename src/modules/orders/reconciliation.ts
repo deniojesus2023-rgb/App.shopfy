@@ -1,8 +1,12 @@
 import "server-only";
 
+import { Prisma } from "@prisma/client";
 import { z } from "zod";
 
 import { prisma } from "@/lib/db";
+import { findOnlineCheckoutIdentity } from "./online-checkout-identity";
+import type { OrderQuote } from "./pricing";
+import { generateOrderPublicId } from "./public-id";
 import { parseOrderSourceIdentifier } from "./shopify-identity";
 import { parseInternalOrderTag } from "./shopify-tag";
 
@@ -19,6 +23,14 @@ const orderWebhookPayloadSchema = z.object({
   cancelled_at: z.string().nullable().optional(),
   financial_status: z.string().nullable().optional(),
   fulfillment_status: z.string().nullable().optional(),
+  // Fase 4D: é por aqui que um pedido nascido de um Draft Order nosso
+  // (checkout ONLINE) se identifica — o custom attribute do draft vira
+  // note attribute do pedido quando o cliente paga.
+  note_attributes: z
+    .array(z.object({ name: z.string().nullable().optional(), value: z.string().nullable().optional() }))
+    .nullable()
+    .optional(),
+  currency: z.string().nullable().optional(),
 });
 
 function toOrderGid(id: number | string): string {
@@ -32,7 +44,11 @@ function parseTags(tags: string | undefined): string[] {
     .filter(Boolean);
 }
 
-export type OrderCreatedReconciliation = "reconciled" | "already_synced" | "external";
+export type OrderCreatedReconciliation =
+  | "reconciled"
+  | "already_synced"
+  | "external"
+  | "online_checkout_created";
 
 /**
  * `orders/create`: distingue (A) pedido que NÓS criamos de (B) pedido
@@ -47,9 +63,20 @@ export type OrderCreatedReconciliation = "reconciled" | "already_synced" | "exte
  */
 export async function reconcileOrderCreatedWebhook(rawPayload: unknown): Promise<OrderCreatedReconciliation> {
   const payload = orderWebhookPayloadSchema.parse(rawPayload);
+
   const internalOrderId =
     parseOrderSourceIdentifier(payload.source_identifier) ?? parseInternalOrderTag(parseTags(payload.tags));
-  if (!internalOrderId) return "external";
+
+  if (!internalOrderId) {
+    // Fase 4D: pode ser um pedido nascido de um checkout ONLINE nosso —
+    // nesse caso o Order local ainda NÃO existe (nunca criamos pedido
+    // antes do pagamento) e é este webhook que o cria.
+    const attemptId = findOnlineCheckoutIdentity(payload.note_attributes);
+    if (attemptId) {
+      return reconcileOnlineCheckoutOrder(attemptId, payload);
+    }
+    return "external";
+  }
 
   const order = await prisma.order.findUnique({ where: { id: internalOrderId }, select: { id: true, shopifyOrderId: true } });
   if (!order) return "external";
@@ -64,6 +91,106 @@ export async function reconcileOrderCreatedWebhook(rawPayload: unknown): Promise
     },
   });
   return "reconciled";
+}
+
+/**
+ * Fase 4D — o pedido pago apareceu na Shopify para uma tentativa de
+ * checkout ONLINE nossa. É AQUI que o Order local ONLINE nasce: o
+ * redirect do browser nunca foi prova de pagamento (item 14), só este
+ * webhook é.
+ *
+ * Idempotente por construção: a tentativa guarda `orderId` (único), então
+ * uma reentrega do mesmo webhook encontra o Order já criado e não duplica.
+ * O quote congelado (`quoteSnapshot`) é a fonte dos valores — nunca
+ * recalculamos preço nesta altura, exatamente como o worker do COD nunca
+ * recalcula a oferta.
+ */
+async function reconcileOnlineCheckoutOrder(
+  attemptId: string,
+  payload: z.infer<typeof orderWebhookPayloadSchema>
+): Promise<OrderCreatedReconciliation> {
+  const attempt = await prisma.onlineCheckoutAttempt.findUnique({ where: { id: attemptId } });
+  if (!attempt) return "external";
+  if (attempt.orderId) return "already_synced";
+
+  const quote = attempt.quoteSnapshot as unknown as OrderQuote;
+  const shopifyOrderId = toOrderGid(payload.id);
+
+  try {
+    await prisma.$transaction(async (tx) => {
+      const order = await tx.order.create({
+        data: {
+          workspaceId: attempt.workspaceId,
+          shopifyStoreId: attempt.shopifyStoreId,
+          funnelId: attempt.funnelId,
+          funnelVersionId: attempt.funnelVersionId,
+          // Sem CodLead: no fluxo ONLINE o cliente preenche os dados
+          // dentro do checkout da Shopify, não no nosso funil.
+          codLeadId: null,
+          publicOrderId: generateOrderPublicId(),
+          // Deriva da tentativa — dois webhooks do mesmo checkout colidem
+          // aqui e o segundo cai no branch de "já existe".
+          idempotencyKey: `online:${attempt.id}`,
+          status: "PENDING",
+          paymentMethod: "ONLINE",
+          checkoutProvider: "SHOPIFY_CHECKOUT",
+          currency: attempt.currency,
+          subtotal: quote.subtotal,
+          discountTotal: quote.discountTotal,
+          paymentMethodDiscount: quote.paymentMethodDiscount,
+          shippingTotal: quote.shippingTotal,
+          total: quote.total,
+          shopifyOrderId,
+          shopifyOrderName: payload.name ?? null,
+          shopifySyncStatus: "SYNCED",
+          shopifyCreatedAt: new Date(),
+        },
+      });
+
+      await tx.orderItem.createMany({
+        data: quote.items.map((item) => ({
+          workspaceId: attempt.workspaceId,
+          orderId: order.id,
+          titleSnapshot: item.titleSnapshot,
+          productId: item.productId ?? null,
+          productVariantId: item.productVariantId ?? null,
+          shopifyProductId: item.shopifyProductId ?? null,
+          shopifyVariantId: item.shopifyVariantId ?? null,
+          variantTitleSnapshot: item.variantTitle ?? null,
+          skuSnapshot: item.sku ?? null,
+          quantity: item.quantity,
+          unitPrice: item.unitPrice,
+          lineSubtotal: item.lineSubtotal,
+          discountTotal: item.discountTotal,
+          lineTotal: item.lineTotal,
+        })),
+      });
+
+      await tx.orderStatusHistory.create({
+        data: {
+          workspaceId: attempt.workspaceId,
+          orderId: order.id,
+          fromStatus: null,
+          toStatus: "PENDING",
+          source: "SHOPIFY",
+        },
+      });
+
+      await tx.onlineCheckoutAttempt.update({
+        where: { id: attempt.id },
+        data: { status: "COMPLETED", orderId: order.id, completedAt: new Date() },
+      });
+    });
+  } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
+      // Reentrega concorrente do mesmo webhook — o outro processamento
+      // ganhou a constraint UNIQUE. Nada a fazer.
+      return "already_synced";
+    }
+    throw error;
+  }
+
+  return "online_checkout_created";
 }
 
 export type OrderUpdatedReconciliation = "updated" | "no_change" | "not_ours";

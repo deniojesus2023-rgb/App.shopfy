@@ -70,6 +70,14 @@ export async function processShopifyOrderCreateJob(payload: ShopifyOrderCreatePa
   if (!order) {
     throw new NonRetryableJobError("Order não encontrado.");
   }
+  // Este worker é EXCLUSIVO do fluxo COD (Fase 4D item 12): um pedido
+  // ONLINE nasce já sincronizado, pela reconciliação do webhook, e nunca
+  // deve ser enfileirado aqui. Sem CodLead não há endereço de entrega para
+  // mandar à Shopify — falha fechada em vez de criar um pedido incompleto.
+  if (!order.codLead) {
+    throw new NonRetryableJobError("Order sem CodLead — fluxo ONLINE não usa este worker.");
+  }
+  const codLead = order.codLead;
 
   if (order.shopifyOrderId) {
     // Já sincronizado (ex.: webhook orders/create reconciliou antes do
@@ -165,15 +173,15 @@ export async function processShopifyOrderCreateJob(payload: ShopifyOrderCreatePa
       sourceIdentifier,
       internalOrderTag: internalOrderTag(order.id),
       note: `Pedido COD #${order.orderNumber}`,
-      phone: order.codLead.phone,
+      phone: codLead.phone,
       lineItems,
       shippingAddress: {
-        firstName: order.codLead.name,
-        address1: order.codLead.address,
-        city: order.codLead.city,
-        province: order.codLead.state,
-        country: order.codLead.country,
-        phone: order.codLead.phone,
+        firstName: codLead.name,
+        address1: codLead.address,
+        city: codLead.city,
+        province: codLead.state,
+        country: codLead.country,
+        phone: codLead.phone,
       },
     });
 

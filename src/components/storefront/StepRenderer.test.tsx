@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { FunnelStep } from "@/modules/funnels/config/steps";
 import type { FunnelTheme } from "@/modules/funnels/config/theme";
+import { NO_ONLINE_CHECKOUT_READINESS } from "@/modules/funnels/config/checkout-provider";
 import type { GamificationResult } from "@/modules/funnels/gamification/evaluate";
 import type { ResolvedProductSnapshot } from "@/modules/funnels/runtime/resolve";
 import { createInitialRuntimeState } from "@/modules/funnels/runtime/state";
@@ -42,6 +43,7 @@ const noopCallbacks: StepRendererCallbacks = {
   onContinue: vi.fn(),
   onSelectOffer: vi.fn(),
   onSelectPaymentMethod: vi.fn(),
+  onOnlineCheckout: null,
   onCodSubmitted: vi.fn(),
   onAcceptUpsell: vi.fn(),
   onDeclineUpsell: vi.fn(),
@@ -67,6 +69,7 @@ function renderStep(step: FunnelStep) {
       gamification={noRewardResult}
       paymentChoiceConfig={null}
       offerTotal={19.9}
+      checkoutReadiness={NO_ONLINE_CHECKOUT_READINESS}
       upsellProduct={null}
       hasNextStep={false}
       callbacks={noopCallbacks}

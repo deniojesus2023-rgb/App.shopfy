@@ -9,14 +9,15 @@ a **Fase 1B** (fila persistente + importação/sincronização de catálogo), a
 a **Fase 2C** (Funnel Builder MVP — editor visual), a **Fase 3** (COD Engine
 + Order Engine + criação de pedido na Shopify), a **Fase 4A** (Pricing &
 Offer Engine — preço fixo por oferta), a **Fase 4B** (Gamification Engine —
-progresso e recompensa determinísticos) e a **Fase 4C** (Payment Method
+progresso e recompensa determinísticos), a **Fase 4C** (Payment Method
 Pricing & Checkout Preparation — desconto por método de pagamento e
-preparação de checkout externo, ver seção própria abaixo).
-Pagamento online real (redirect Shopify Checkout/Yampi), fornecedores/
-dropshipping, WhatsApp, recuperação de carrinho, domínio próprio,
-antifraude sofisticado, order editing de upsell, recompensa econômica real
-de gamificação (PRICING_REWARD) e persistência de analytics ainda não
-foram implementados.
+preparação de checkout externo) e a **Fase 4D** (Checkout ONLINE mínimo
+via Draft Order + `invoiceUrl` da Shopify, atrás de feature flag e ainda
+não validado em loja real — ver seção própria abaixo).
+Yampi, fornecedores/dropshipping, WhatsApp, recuperação de carrinho,
+domínio próprio, antifraude sofisticado, order editing de upsell,
+recompensa econômica real de gamificação (PRICING_REWARD) e persistência
+de analytics ainda não foram implementados.
 
 ## Stack
 
@@ -688,7 +689,8 @@ nenhum checkout externo de verdade ainda.
   em `SHOPIFY_CHECKOUT`/`YAMPI` — validado no próprio schema do step.
 - **`isCheckoutProviderReady(provider)`**: único ponto de verdade sobre
   integração real — só `INTERNAL_COD` é `true` nesta fase inteira,
-  hardcoded. Storefront público só expõe/seleciona método `enabled ∧
+  hardcoded (a Fase 4D substitui esse hardcode por um contexto de
+  readiness explícito; ver seção da Fase 4D). Storefront público só expõe/seleciona método `enabled ∧
   ready` (fail closed: nenhum botão de checkout quebrado chega ao
   consumidor). Builder preview mostra todos os métodos habilitados, com
   badge "No conectado" quando não-ready — nunca confunde "visível no
@@ -771,6 +773,115 @@ nenhum checkout externo de verdade ainda.
 - **Gamification**: `selectedPaymentMethod` NÃO entra no
   `GamificationContext` nesta fase — nenhuma regra nova o consome, nunca
   inventa progresso por escolher pagar online.
+
+## Checkout ONLINE via Draft Order (Fase 4D)
+
+Primeira integração de pagamento online real do projeto, deliberadamente
+mínima e atrás da flag `SHOPIFY_ONLINE_CHECKOUT_ENABLED` (default
+`false`). O caminho escolhido é `draftOrderCreate` → `invoiceUrl`:
+o cliente é redirecionado para um checkout hospedado pela Shopify já com
+o preço que **nós** calculamos.
+
+- **Por que draft order e não cart permalink + discount code**: um
+  discount code é sempre um *delta contra o preço vivo do catálogo*.
+  Se o catálogo muda entre a publicação do funil e o clique, o desconto
+  fixo passa a produzir outro total — o servidor deixa de ser a
+  autoridade de preço, que é o invariante central do sistema desde a Fase
+  4A. Além disso, o código de desconto vaza (é reutilizável fora do
+  funil), a Shopify limita descontos automáticos ativos e um código por
+  checkout entra em rota de colisão com o teto de códigos da loja. O
+  `priceOverride` por line item do draft order preserva o invariante
+  **por construção**: mandamos o preço unitário exato, não um desconto.
+- **Projeção de line items idêntica à do COD**: reutiliza
+  `buildShopifyLineItems`/`distributeLineTotal` (Fase 4A hardening) —
+  variante real, **quantidade física real** (nunca `quantity: 1` fingindo
+  N unidades) e, quando o total não divide exato em centavos, dois grupos
+  da mesma variante cuja soma bate no centavo. `unitPrice` vira
+  `priceOverride`. Sem variante congelada, cai em custom line item
+  preservando quantidade e preço.
+- **Nenhum Order local antes do pagamento**: o clique cria um
+  `OnlineCheckoutAttempt` (`PENDING`→`CREATING`→`READY`→`COMPLETED`, com
+  `FAILED`/`EXPIRED`/`MANUAL_REVIEW`), nunca um `Order`. O `Order` local
+  ONLINE nasce **só** na reconciliação do webhook `orders/create`
+  (`reconcileOnlineCheckoutOrder`), com `codLeadId: null`,
+  `paymentMethod: ONLINE`, `checkoutProvider: SHOPIFY_CHECKOUT`,
+  `idempotencyKey: online:<attemptId>` e valores lidos do
+  `quoteSnapshot` congelado — nunca recalculados nessa altura. O redirect
+  do browser **nunca** é tratado como prova de pagamento.
+- **Identidade sem PII, e a assimetria em relação ao COD**: o COD usa
+  `sourceIdentifier` (filtrável e não editável pelo lojista). Draft
+  orders não têm equivalente pesquisável, então a **tag** é o anchor de
+  reconciliação (`draftOrders(query: "tag:'appshopfy_checkout_<id>'")`).
+  Tag é editável pelo lojista — aceitável aqui porque perder o anchor de
+  um draft order gera no máximo um draft duplicado, nunca uma cobrança
+  duplicada. A mesma identidade vai também em `customAttributes`, que é
+  o que atravessa para `note_attributes` do pedido pago e permite ligar
+  webhook → tentativa.
+- **Idempotência e resultado ambíguo**: `idempotencyKey =
+  <funnelId>:<checkoutAttemptId>`; duplo clique reusa a `checkoutUrl`
+  existente enquanto `READY` e dentro do TTL de 1h. O status vira
+  `CREATING` **antes** de qualquer byte sair (mesma estratégia do worker
+  de pedidos da Fase 3): se uma tentativa anterior morreu em `CREATING`,
+  a próxima primeiro procura por tag na Shopify — 1 encontrado reusa,
+  >1 vira `MANUAL_REVIEW` (nunca cria outro, nunca escolhe sozinho).
+  Corrida real de dois cliques simultâneos é decidida pela constraint
+  UNIQUE, não por quem chegou antes no `findUnique`.
+- **`isCheckoutProviderReady` deixa de ser hardcoded** e passa a receber
+  um `CheckoutReadinessContext` (`onlineCheckoutEnabled` ∧
+  `storeConnected`). A função continua pura: quem lê `env` é o servidor,
+  que injeta a readiness em `ResolvedFunnel` (mesmo padrão de `currency`
+  na Fase 4A) — nenhum componente de client lê variável de ambiente.
+  `YAMPI` continua `false` incondicionalmente.
+- **`POST /api/storefront/online-checkout`**: recebe só identidades
+  (`funnelPublicId`, `funnelVersionId`, `checkoutAttemptId`,
+  `selectedOfferId`, `selectedPaymentMethodId`) e devolve só
+  `checkoutUrl`. O browser nunca manda preço, desconto, total,
+  quantidade, provider ou percentual. Rate limit mais apertado que o do
+  COD (20/10min por IP, 6/5min por funil+IP), porque cada tentativa vira
+  uma escrita na Shopify.
+- **Frete e imposto são calculados no checkout da Shopify**, não por nós
+  — o total que o cliente paga pode ser maior que o `merchandiseTotal`
+  que congelamos. Isso está dito explicitamente ao cliente na etapa de
+  pagamento ("El envío y los impuestos se calculan en el checkout") e é
+  o principal item a conferir na validação manual abaixo.
+- **Worker COD intocado**: `shopify-order-create.ts` ganhou só um guard
+  (`Order` sem `CodLead` → `NonRetryableJobError`), já que o fluxo ONLINE
+  nunca passa por ele. `Order.codLeadId` virou opcional (`String? @unique`).
+
+### Checklist de validação manual em development store
+
+A flag fica `false` até este checklist passar. **Não habilitar em
+produção antes disso.** Rode numa *development store* da Shopify, com um
+funil publicado que tenha um método ONLINE/`SHOPIFY_CHECKOUT` habilitado.
+
+Preparação: `npx prisma db push` (tabela `OnlineCheckoutAttempt` e
+`Order.codLeadId` nullable), `SHOPIFY_ONLINE_CHECKOUT_ENABLED="true"`,
+loja com status `CONNECTED`, webhook `orders/create` registrado e
+apontando para a app.
+
+| # | O que confirmar | Como | Esperado |
+|---|---|---|---|
+| 1 | **Quantidade correta** | Escolher uma oferta de 3 unidades e abrir o checkout | 3 unidades da variante real; nunca 1 item com "3x" no título |
+| 2 | **Preço correto** | Comparar o total do checkout com o total mostrado no funil | Idênticos ao centavo, mesmo com oferta `FIXED_TOTAL` + desconto de pagamento; total não divisível aparece como 2 linhas da mesma variante somando exato |
+| 3 | **Preço desacoplado do catálogo** | Alterar o preço do produto na Shopify **depois** de publicar o funil e então abrir o checkout | O checkout mantém o preço do funil (`priceOverride`), não o novo preço de catálogo |
+| 4 | **`checkoutUrl` funcional** | Clicar em "PAGAR POR EL SITIO" | Redirect para o `invoiceUrl` da Shopify, página carrega, não expira imediatamente |
+| 5 | **Pagamento disponível** | Ver os meios de pagamento na página | Ao menos um método de teste (Bogus Gateway) selecionável. **Verificar também se Shop Pay / carteiras aparecem** — não temos confirmação documental de que `invoiceUrl` os oferece; se não aparecerem, é uma limitação a registrar, não um bug |
+| 6 | **Order Shopify criado** | Concluir o pagamento de teste | Pedido pago aparece em Orders, com os mesmos valores do item 2 |
+| 7 | **Vínculo com o checkout attempt** | Abrir o pedido na Shopify e inspecionar `note_attributes` (via Admin API ou o webhook recebido) | `_appshopfy_checkout = appshopfy_checkout_<attemptId>`. **Este é o ponto mais incerto de toda a fase**: se `customAttributes` do draft order não atravessarem para o pedido pago, a reconciliação não liga nada e o Order local ONLINE não nasce — é bloqueante |
+| 8 | **Webhook / reconciliação** | Após o pagamento, olhar o banco local | `OnlineCheckoutAttempt.status = COMPLETED` com `orderId` preenchido; `Order` local com `paymentMethod=ONLINE`, `checkoutProvider=SHOPIFY_CHECKOUT`, `codLeadId=null`, `shopifySyncStatus=SYNCED`, itens batendo com o `quoteSnapshot` |
+| 9 | **Idempotência do webhook** | Reenviar o mesmo `orders/create` pelo painel da Shopify | Nenhum `Order` duplicado (segunda entrega retorna `already_synced`) |
+| 10 | **Idempotência do clique** | Clicar duas vezes no botão de pagar | Um único draft order; a segunda chamada devolve a mesma `checkoutUrl` |
+| 11 | **Comportamento de estoque** | Observar o inventário da variante antes do checkout, com o draft aberto, e depois do pagamento | Registrar o que de fato acontece: draft order **não** reserva estoque; a baixa deve ocorrer só na criação do pedido pago. Confirmar que um draft abandonado não segura inventário |
+| 12 | **Frete e imposto** | Ver o total final na tela de pagamento | Frete/imposto podem somar por cima do nosso `merchandiseTotal`. Anotar os valores: é assim que se decide se o funil precisa comunicar frete antes do redirect |
+| 13 | **Fail closed** | Desligar `SHOPIFY_ONLINE_CHECKOUT_ENABLED` e recarregar o funil público | O método ONLINE **não aparece**; um POST forjado no endpoint responde 400 sem criar draft order |
+| 14 | **Bundles nativos** | Se a variante for um bundle nativo da Shopify | `priceOverride` tem limitações documentadas com bundles — confirmar o comportamento ou restringir o uso a variantes simples |
+| 15 | **Sem PII vazada** | Inspecionar o draft order criado | Sem `customer`, sem `shippingAddress`, sem nome/telefone/endereço em tags, atributos ou nota — o checkout da Shopify é quem coleta |
+
+Itens 5, 7, 11 e 14 são as incertezas conhecidas: dependem de
+comportamento da Shopify que não foi possível verificar contra
+documentação oficial neste ambiente. O item 7 é bloqueante para
+habilitar a flag; os demais são de registro/decisão.
+
 
 ## Testes
 
@@ -967,3 +1078,32 @@ real por método, CONTINUAR bloqueado sem seleção explícita); e
 `PaymentChoiceEditor` (seletor de provider só pra ONLINE, preview local
 usando o mesmo `resolvePaymentMethodPrice` do servidor, trava de "ao
 menos um método ativo").
+
+Da Fase 4D: `createDraftOrder` (`priceOverride` por line item — é o que
+desacopla do preço de catálogo ao vivo; `variantId` e quantidade física
+reais, quantidade nunca codificada no título; total não divisível vira
+dois line items da mesma variante somando exato; sem variante congelada
+cai em custom line item preservando quantidade e preço; identidade
+gravada em tag **e** custom attribute; nunca envia `customer`/
+`shippingAddress`/qualquer PII; `userErrors` retorna outcome tipado em
+vez de lançar; draft criado sem `invoiceUrl` falha fechado; timeout
+explícito no cliente); `findDraftOrdersByIdentity` (filtra por
+`tag:'...'`, busca mais de um resultado para conseguir detectar
+duplicata, devolve todos e deixa o caller decidir 0/1/>1, ignora draft
+sem `invoiceUrl`); `onlineCheckoutIdentity`/`parseOnlineCheckoutIdentity`
+(round-trip, prefixo obrigatório, nunca contém PII, identidade de outro
+sistema ignorada); `startOnlineCheckout` (preço/oferta/método resolvidos
+sempre do config publicado, payload forjado com preço ou provider é
+ignorado; método inexistente/desabilitado/COD/provider não-`SHOPIFY_CHECKOUT`
+rejeitados; flag desligada ou loja desconectada falha fechado sem tocar
+na rede; nunca cria `Order` local; duplo clique reusa a mesma
+`checkoutUrl`; tentativa anterior presa em `CREATING` reconcilia por tag
+antes de criar de novo — 1 match reusa, >1 vira `MANUAL_REVIEW` e nunca
+cria outro; erro de rede deixa o status em `CREATING` de propósito;
+`COMPLETED`/`MANUAL_REVIEW` nunca remontam checkout; corrida de
+`idempotencyKey` resolvida pela constraint UNIQUE); e
+`reconcileOnlineCheckoutOrder` (só o webhook `orders/create` cria o
+`Order` ONLINE, com `codLeadId: null`, `paymentMethod=ONLINE`,
+`checkoutProvider=SHOPIFY_CHECKOUT` e valores lidos do `quoteSnapshot`
+congelado — nunca recalculados; reentrega do mesmo webhook não duplica;
+tentativa desconhecida é tratada como pedido externo).

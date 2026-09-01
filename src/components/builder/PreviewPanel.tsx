@@ -1,6 +1,7 @@
 "use client";
 
 import { FunnelRuntime } from "@/components/storefront/FunnelRuntime";
+import { NO_ONLINE_CHECKOUT_READINESS } from "@/modules/funnels/config/checkout-provider";
 import type { ResolvedFunnel } from "@/modules/funnels/runtime/resolve";
 import { getEnabledSteps } from "@/modules/funnels/runtime/state";
 import { Button } from "@/components/ui/button";
@@ -41,6 +42,10 @@ export function PreviewPanel({
     config: state.draftConfig,
     snapshot,
     currency,
+    // Preview do Builder mostra todos os métodos habilitados (com badge
+    // "No conectado" quando o provider não tem integração) — nunca é a
+    // mesma checagem da disponibilidade pública.
+    checkoutReadiness: NO_ONLINE_CHECKOUT_READINESS,
     upsellProduct: upsellProduct ? { title: upsellProduct.title, featuredImageUrl: upsellProduct.featuredImageUrl } : null,
     isPreview: true,
   };

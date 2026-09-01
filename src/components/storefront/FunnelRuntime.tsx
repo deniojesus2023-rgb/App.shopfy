@@ -151,6 +151,7 @@ export function FunnelRuntime({
           gamification={gamification ?? NO_REWARD_STEP_RESULT}
           paymentChoiceConfig={paymentChoiceConfig}
           offerTotal={offerTotal}
+          checkoutReadiness={resolved.checkoutReadiness}
           upsellProduct={resolved.upsellProduct}
           hasNextStep={hasNextStep}
           funnelPublicId={resolved.funnel.publicId}
@@ -159,6 +160,32 @@ export function FunnelRuntime({
             onContinue: () => dispatch({ type: "NEXT_STEP", steps: resolved.config.steps }),
             onSelectOffer: (offerId, quantity) => dispatch({ type: "SELECT_OFFER", offerId, quantity }),
             onSelectPaymentMethod: (paymentMethodId) => dispatch({ type: "SELECT_PAYMENT_METHOD", paymentMethodId }),
+            // Preview do Builder nunca cria draft order real nem redireciona.
+            onOnlineCheckout: resolved.isPreview
+              ? null
+              : async (paymentMethodId: string) => {
+                  const response = await fetch("/api/storefront/online-checkout", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                      funnelPublicId: resolved.funnel.publicId,
+                      funnelVersionId: resolved.version.id,
+                      checkoutAttemptId: state.checkoutAttemptId,
+                      selectedOfferId: state.selectedOfferId ?? undefined,
+                      selectedPaymentMethodId: paymentMethodId,
+                    }),
+                  });
+                  const json = (await response.json()) as {
+                    ok: boolean;
+                    data?: { checkoutUrl: string };
+                  };
+                  if (!json.ok || !json.data?.checkoutUrl) {
+                    throw new Error("online_checkout_failed");
+                  }
+                  // A URL vem SEMPRE do servidor (invoiceUrl do draft
+                  // order) — nunca montada no client.
+                  window.location.assign(json.data.checkoutUrl);
+                },
             onCodSubmitted: (order) => {
               dispatch({ type: "ORDER_CONFIRMED", order });
               dispatch({ type: "NEXT_STEP", steps: resolved.config.steps });

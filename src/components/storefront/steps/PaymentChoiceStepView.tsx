@@ -1,8 +1,12 @@
+"use client";
+
+import { useState } from "react";
+
 import { Badge } from "../Badge";
 import { PrimaryButton } from "../buttons";
 import { StorefrontCard } from "../Card";
 import { isSoftButtonStyle } from "../theme";
-import { isCheckoutProviderReady } from "@/modules/funnels/config/checkout-provider";
+import { isCheckoutProviderReady, type CheckoutReadinessContext } from "@/modules/funnels/config/checkout-provider";
 import type { PaymentChoiceStepConfig, PaymentMethodConfig } from "@/modules/funnels/config/steps";
 import type { FunnelTheme } from "@/modules/funnels/config/theme";
 import { resolvePaymentMethodPrice } from "@/modules/funnels/pricing/resolve-payment-method-price";
@@ -22,8 +26,10 @@ export function PaymentChoiceStepView({
   currency,
   selected,
   isPreview,
+  readiness,
   onSelect,
   onContinue,
+  onOnlineCheckout = null,
 }: {
   config: PaymentChoiceStepConfig;
   theme: FunnelTheme;
@@ -32,11 +38,51 @@ export function PaymentChoiceStepView({
   currency: string;
   selected: string | null;
   isPreview: boolean;
+  /** Readiness calculada no servidor (Fase 4D) — nunca lida de env aqui. */
+  readiness: CheckoutReadinessContext;
   onSelect: (paymentMethodId: string) => void;
   onContinue: () => void;
+  /**
+   * Só usado quando o método selecionado é ONLINE (Fase 4D): prepara o
+   * checkout no servidor e devolve a URL para onde redirecionar. Nunca
+   * calcula preço no client — o servidor é a autoridade. `null` no
+   * preview do Builder, que nunca cria draft order real.
+   */
+  onOnlineCheckout?: ((paymentMethodId: string) => Promise<void>) | null;
 }) {
+  const [isRedirecting, setIsRedirecting] = useState(false);
+  const [checkoutError, setCheckoutError] = useState<string | null>(null);
+
+  const selectedMethod = config.paymentMethods.find((m) => m.id === selected) ?? null;
+  const isOnlineSelected = selectedMethod?.method === "ONLINE";
+
+  async function handleContinue() {
+    setCheckoutError(null);
+
+    if (!isOnlineSelected || !selectedMethod) {
+      // COD (ou preview): segue o fluxo interno normal — próxima etapa é o
+      // nosso formulário COD.
+      onContinue();
+      return;
+    }
+
+    if (!onOnlineCheckout) {
+      // Preview do Builder: nunca cria checkout real nem redireciona.
+      setCheckoutError("Vista previa: el checkout en línea no se abre aquí.");
+      return;
+    }
+
+    setIsRedirecting(true);
+    try {
+      await onOnlineCheckout(selectedMethod.id);
+    } catch {
+      setCheckoutError("No pudimos preparar el pago en línea. Inténtalo nuevamente.");
+    } finally {
+      setIsRedirecting(false);
+    }
+  }
   const visibleMethods = config.paymentMethods.filter(
-    (m) => m.enabled && (isPreview || isCheckoutProviderReady(m.provider))
+    (m) => m.enabled && (isPreview || isCheckoutProviderReady(m.provider, readiness))
   );
 
   return (
@@ -46,7 +92,7 @@ export function PaymentChoiceStepView({
 
         {visibleMethods.map((method) => {
           const resolved = resolvePaymentMethodPrice(offerTotal, method.pricing);
-          const ready = isCheckoutProviderReady(method.provider);
+          const ready = isCheckoutProviderReady(method.provider, readiness);
           return (
             <PaymentMethodOption
               key={method.id}
@@ -62,8 +108,27 @@ export function PaymentChoiceStepView({
         })}
       </fieldset>
 
-      <PrimaryButton soft={isSoftButtonStyle(theme)} onClick={onContinue} disabled={!selected}>
-        CONTINUAR
+      {isOnlineSelected && (
+        // Honestidade sobre frete/imposto (Fase 4D item 15): o nosso quote
+        // é só MERCADORIA — a Shopify soma frete/impostos no checkout dela
+        // conforme a configuração da loja. Nunca prometer "total final".
+        <p className="text-xs opacity-60">
+          El envío y los impuestos se calculan en el checkout.
+        </p>
+      )}
+
+      {checkoutError && (
+        <p role="alert" className="text-sm text-red-600">
+          {checkoutError}
+        </p>
+      )}
+
+      <PrimaryButton
+        soft={isSoftButtonStyle(theme)}
+        onClick={handleContinue}
+        disabled={!selected || isRedirecting}
+      >
+        {isRedirecting ? "Redirigiendo..." : isOnlineSelected ? "PAGAR POR EL SITIO" : "CONTINUAR"}
       </PrimaryButton>
     </div>
   );

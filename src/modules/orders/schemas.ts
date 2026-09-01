@@ -37,6 +37,27 @@ export const submitCheckoutSchema = z.object({
 
 export type SubmitCheckoutInput = z.infer<typeof submitCheckoutSchema>;
 
+/**
+ * Início de checkout ONLINE (Fase 4D). Deliberadamente NÃO aceita nenhum
+ * campo financeiro nem de cliente: preço/desconto/total vêm do
+ * `calculateOrderQuote` no servidor, e nome/endereço são preenchidos
+ * dentro do checkout da Shopify — o funil não coleta PII no fluxo ONLINE.
+ */
+export const startOnlineCheckoutSchema = z.object({
+  funnelPublicId: z.string().min(1).max(64),
+  funnelVersionId: z.string().cuid(),
+  checkoutAttemptId: z.string().uuid(),
+  selectedOfferId: z.string().max(64).optional(),
+  selectedPaymentMethodId: z.string().max(64),
+});
+
+export type StartOnlineCheckoutInput = z.infer<typeof startOnlineCheckoutSchema>;
+
+export interface StartOnlineCheckoutResponse {
+  /** `DraftOrder.invoiceUrl` — nunca IDs internos. */
+  checkoutUrl: string;
+}
+
 export interface SubmitCheckoutResponse {
   publicOrderId: string;
   orderNumber: number;

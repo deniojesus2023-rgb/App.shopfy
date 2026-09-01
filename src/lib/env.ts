@@ -45,6 +45,17 @@ const envSchema = z.object({
     .enum(["true", "false"])
     .default("false")
     .transform((v) => v === "true"),
+
+  // Interruptor do checkout ONLINE via Draft Order + invoiceUrl (Fase 4D).
+  // Default "false" deliberado: a integração existe mas NÃO é considerada
+  // pronta até ser validada numa development store (ver checklist no
+  // README). Enquanto for false, `SHOPIFY_CHECKOUT` nunca fica ready e o
+  // storefront público nem exibe o método — nenhum consumidor final chega
+  // num checkout não validado por acidente.
+  SHOPIFY_ONLINE_CHECKOUT_ENABLED: z
+    .enum(["true", "false"])
+    .default("false")
+    .transform((v) => v === "true"),
 });
 
 export const env = envSchema.parse({
@@ -60,4 +71,5 @@ export const env = envSchema.parse({
   CRON_SECRET: process.env.CRON_SECRET,
   FUNNEL_PREVIEW_SECRET: process.env.FUNNEL_PREVIEW_SECRET,
   SHOPIFY_ORDER_SYNC_ENABLED: process.env.SHOPIFY_ORDER_SYNC_ENABLED,
+  SHOPIFY_ONLINE_CHECKOUT_ENABLED: process.env.SHOPIFY_ONLINE_CHECKOUT_ENABLED,
 });

@@ -86,16 +86,24 @@ export default async function OrderDetailPage({
 
         <section className="rounded-lg border border-neutral-200 p-4">
           <h2 className="mb-3 text-sm font-semibold text-neutral-500">Cliente y dirección</h2>
-          <dl className="flex flex-col gap-2 text-sm">
-            <Row label="Nombre">{order.codLead.name}</Row>
-            <Row label="Teléfono">{order.codLead.phone}</Row>
-            {order.codLead.whatsapp && <Row label="WhatsApp">{order.codLead.whatsapp}</Row>}
-            <Row label="Dirección">{order.codLead.address}</Row>
-            {order.codLead.addressReference && <Row label="Referencia">{order.codLead.addressReference}</Row>}
-            <Row label="Ciudad">
-              {order.codLead.city}, {order.codLead.state}, {order.codLead.country}
-            </Row>
-          </dl>
+          {/* Pedido ONLINE (Fase 4D) não tem CodLead: o cliente preencheu os
+              dados dentro do checkout da Shopify, não no nosso funil. */}
+          {order.codLead ? (
+            <dl className="flex flex-col gap-2 text-sm">
+              <Row label="Nombre">{order.codLead.name}</Row>
+              <Row label="Teléfono">{order.codLead.phone}</Row>
+              {order.codLead.whatsapp && <Row label="WhatsApp">{order.codLead.whatsapp}</Row>}
+              <Row label="Dirección">{order.codLead.address}</Row>
+              {order.codLead.addressReference && <Row label="Referencia">{order.codLead.addressReference}</Row>}
+              <Row label="Ciudad">
+                {order.codLead.city}, {order.codLead.state}, {order.codLead.country}
+              </Row>
+            </dl>
+          ) : (
+            <p className="text-sm text-neutral-500">
+              Pago en línea — los datos del cliente están en el pedido de Shopify.
+            </p>
+          )}
         </section>
 
         <section className="rounded-lg border border-neutral-200 p-4">

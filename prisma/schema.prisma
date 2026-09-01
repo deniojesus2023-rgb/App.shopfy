@@ -61,6 +61,7 @@ model Workspace {
   orders               Order[]
   orderItems           OrderItem[]
   orderStatusHistory   OrderStatusHistory[]
+  onlineCheckouts      OnlineCheckoutAttempt[]
 
   @@map("workspaces")
 }
@@ -172,12 +173,13 @@ model ShopifyStore {
   createdAt            DateTime           @default(now())
   updatedAt            DateTime           @updatedAt
 
-  workspace       Workspace             @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  workspace       Workspace               @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   webhookEvents   ShopifyWebhookEvent[]
   catalogSyncRuns CatalogSyncRun[]
   products        Product[]
   funnels         Funnel[]
   orders          Order[]
+  onlineCheckouts OnlineCheckoutAttempt[]
 
   @@index([workspaceId])
   @@map("shopify_stores")
@@ -430,15 +432,16 @@ model Funnel {
   updatedAt          DateTime     @updatedAt
   archivedAt         DateTime?
 
-  workspace        Workspace       @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  shopifyStore     ShopifyStore    @relation(fields: [shopifyStoreId], references: [id], onDelete: Cascade)
-  createdBy        User            @relation(fields: [createdByUserId], references: [id])
+  workspace        Workspace               @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  shopifyStore     ShopifyStore            @relation(fields: [shopifyStoreId], references: [id], onDelete: Cascade)
+  createdBy        User                    @relation(fields: [createdByUserId], references: [id])
   // 1–1 com a versão atualmente publicada. Nula enquanto o funil nunca foi
   // publicado. Nunca aponta para uma versão DRAFT ou SUPERSEDED.
-  publishedVersion FunnelVersion?  @relation("PublishedVersion", fields: [publishedVersionId], references: [id], onDelete: SetNull)
-  versions         FunnelVersion[] @relation("FunnelVersions")
+  publishedVersion FunnelVersion?          @relation("PublishedVersion", fields: [publishedVersionId], references: [id], onDelete: SetNull)
+  versions         FunnelVersion[]         @relation("FunnelVersions")
   products         FunnelProduct[]
   orders           Order[]
+  onlineCheckouts  OnlineCheckoutAttempt[]
 
   // Slug único por workspace (não globalmente) — domínio próprio é fase futura.
   @@unique([workspaceId, slug])
@@ -476,12 +479,13 @@ model FunnelVersion {
   // por uma janela curta depois disso — ver modules/orders/version-window.ts.
   supersededAt        DateTime?
 
-  workspace          Workspace              @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  funnel             Funnel                 @relation("FunnelVersions", fields: [funnelId], references: [id], onDelete: Cascade)
-  createdBy          User                   @relation(fields: [createdByUserId], references: [id])
-  publishedForFunnel Funnel?                @relation("PublishedVersion")
+  workspace          Workspace               @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  funnel             Funnel                  @relation("FunnelVersions", fields: [funnelId], references: [id], onDelete: Cascade)
+  createdBy          User                    @relation(fields: [createdByUserId], references: [id])
+  publishedForFunnel Funnel?                 @relation("PublishedVersion")
   productSnapshot    FunnelProductSnapshot?
   orders             Order[]
+  onlineCheckouts    OnlineCheckoutAttempt[]
 
   @@unique([funnelId, versionNumber])
   @@index([funnelId, status])
@@ -656,12 +660,16 @@ enum OrderCheckoutProvider {
 }
 
 model Order {
-  id              String @id @default(cuid())
+  id              String  @id @default(cuid())
   workspaceId     String
   shopifyStoreId  String
   funnelId        String
   funnelVersionId String
-  codLeadId       String @unique
+  // Nulo para pedidos ONLINE (Fase 4D): o cliente preenche nome/endereço
+  // dentro do checkout da Shopify, não no nosso funil — não existe CodLead
+  // nesse fluxo. Continua obrigatório na prática para COD, onde o Order só
+  // é criado junto com o lead na mesma transação.
+  codLeadId       String? @unique
 
   // Identificador de resolução pública (endpoint de confirmação, futuro
   // rastreio) — aleatório, nunca sequencial/previsível.
@@ -674,8 +682,8 @@ model Order {
   // submits do mesmo attempt colidem aqui e retornam o mesmo Order.
   idempotencyKey String @unique
 
-  status        OrderStatus        @default(PENDING)
-  paymentMethod OrderPaymentMethod
+  status           OrderStatus           @default(PENDING)
+  paymentMethod    OrderPaymentMethod
   // Congelado no momento da criação (ver comentário do enum) — nunca
   // reconsultado da config do Funnel depois. Default INTERNAL_COD é seguro
   // para linhas existentes: todo Order criado antes desta fase era COD.
@@ -684,19 +692,19 @@ model Order {
   // ISO 4217. Resolvido de ShopifyStore.currency no momento da compra.
   currency String
 
-  subtotal      Decimal @db.Decimal(12, 2)
+  subtotal              Decimal @db.Decimal(12, 2)
   // Soma de offerDiscount + paymentMethodDiscount (Fase 4C) — granularidade
   // fina fica em `paymentMethodDiscount` abaixo; este campo continua tendo
   // o mesmo papel de sempre (total - subtotal, ignorando frete).
-  discountTotal Decimal @db.Decimal(12, 2)
+  discountTotal         Decimal @db.Decimal(12, 2)
   // Parcela de `discountTotal` que veio do MÉTODO DE PAGAMENTO escolhido
   // (Fase 4C), nunca da oferta — permite reconstruir depois "quanto deste
   // pedido veio de desconto por pagar online" sem depender de nada além do
   // próprio Order. Sempre 0 para pedidos sem desconto de pagamento
   // (inclusive todo Order anterior a esta fase).
   paymentMethodDiscount Decimal @default(0) @db.Decimal(12, 2)
-  shippingTotal Decimal @db.Decimal(12, 2)
-  total         Decimal @db.Decimal(12, 2)
+  shippingTotal         Decimal @db.Decimal(12, 2)
+  total                 Decimal @db.Decimal(12, 2)
 
   shopifyOrderId    String?
   shopifyOrderName  String?
@@ -708,13 +716,14 @@ model Order {
   completedAt      DateTime?
   cancelledAt      DateTime?
 
-  workspace     Workspace            @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  shopifyStore  ShopifyStore         @relation(fields: [shopifyStoreId], references: [id], onDelete: Cascade)
-  funnel        Funnel               @relation(fields: [funnelId], references: [id], onDelete: Cascade)
-  funnelVersion FunnelVersion        @relation(fields: [funnelVersionId], references: [id], onDelete: Cascade)
-  codLead       CodLead              @relation(fields: [codLeadId], references: [id], onDelete: Restrict)
-  items         OrderItem[]
-  statusHistory OrderStatusHistory[]
+  workspace      Workspace              @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  shopifyStore   ShopifyStore           @relation(fields: [shopifyStoreId], references: [id], onDelete: Cascade)
+  funnel         Funnel                 @relation(fields: [funnelId], references: [id], onDelete: Cascade)
+  funnelVersion  FunnelVersion          @relation(fields: [funnelVersionId], references: [id], onDelete: Cascade)
+  codLead        CodLead?               @relation(fields: [codLeadId], references: [id], onDelete: Restrict)
+  items          OrderItem[]
+  statusHistory  OrderStatusHistory[]
+  onlineCheckout OnlineCheckoutAttempt?
 
   @@index([workspaceId, createdAt])
   @@index([workspaceId, status])
@@ -778,4 +787,85 @@ model OrderStatusHistory {
 
   @@index([orderId, createdAt])
   @@map("order_status_history")
+}
+
+// ---------------------------------------------------------------------------
+// Checkout ONLINE — Fase 4D (Draft Order + invoiceUrl)
+// ---------------------------------------------------------------------------
+
+/// Estados do ciclo de vida de uma tentativa de checkout online.
+/// Deliberadamente pequeno — não é uma máquina de estados de pagamento.
+/// `COMPLETED` significa "o pedido Shopify correspondente apareceu e foi
+/// reconciliado", NUNCA "o cliente abriu o invoiceUrl" (Fase 4D item 14:
+/// checkout criado ≠ pedido criado ≠ pagamento confirmado).
+enum OnlineCheckoutStatus {
+  PENDING
+  CREATING
+  READY
+  COMPLETED
+  EXPIRED
+  FAILED
+  MANUAL_REVIEW
+}
+
+/// Tentativa de checkout ONLINE. Deliberadamente NÃO é um Order: nenhum
+/// pedido local existe antes do pagamento (Fase 4D item 5/12) — o Order
+/// local ONLINE só nasce pela reconciliação do webhook `orders/create`.
+///
+/// Não guarda NENHUMA PII: o cliente preenche nome/endereço dentro do
+/// checkout da Shopify, não no nosso funil. O que fica aqui é a identidade
+/// da tentativa, o quote congelado e os ponteiros para o draft order.
+model OnlineCheckoutAttempt {
+  id              String @id @default(cuid())
+  workspaceId     String
+  shopifyStoreId  String
+  funnelId        String
+  funnelVersionId String
+
+  /// Derivada de `funnelId:checkoutAttemptId` — mesma estratégia de
+  /// idempotência do `Order.idempotencyKey` (Fase 3). Dois cliques do
+  /// mesmo attempt colidem aqui e reutilizam o mesmo draft order.
+  idempotencyKey    String @unique
+  /// UUID gerado uma vez no client (não é PII) — guardado para suporte.
+  checkoutAttemptId String
+
+  selectedOfferId         String?
+  selectedPaymentMethodId String?
+
+  currency         String
+  /// Quote congelado no momento da criação (o mesmo objeto que
+  /// `calculateOrderQuote` devolveu) — é o que foi projetado no draft
+  /// order, e a única forma de auditar depois o que prometemos cobrar.
+  /// MERCHANDISE apenas: frete/impostos são adicionados pela Shopify no
+  /// checkout e nunca estiveram neste número (ver README).
+  quoteSnapshot    Json
+  /// Espelha `quoteSnapshot.total` numa coluna consultável.
+  merchandiseTotal Decimal @db.Decimal(12, 2)
+
+  status OnlineCheckoutStatus @default(PENDING)
+
+  shopifyDraftOrderId   String?
+  shopifyDraftOrderName String?
+  /// `DraftOrder.invoiceUrl` — o link de checkout da Shopify.
+  checkoutUrl           String?
+
+  /// Order local criado pela reconciliação do webhook, quando o cliente
+  /// efetivamente pagou. Null enquanto o pagamento não aconteceu.
+  orderId String? @unique
+
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  expiresAt   DateTime
+  completedAt DateTime?
+
+  workspace     Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  shopifyStore  ShopifyStore  @relation(fields: [shopifyStoreId], references: [id], onDelete: Cascade)
+  funnel        Funnel        @relation(fields: [funnelId], references: [id], onDelete: Cascade)
+  funnelVersion FunnelVersion @relation(fields: [funnelVersionId], references: [id], onDelete: Cascade)
+  order         Order?        @relation(fields: [orderId], references: [id], onDelete: SetNull)
+
+  @@index([workspaceId, createdAt])
+  @@index([status, expiresAt])
+  @@index([shopifyDraftOrderId])
+  @@map("online_checkout_attempts")
 }

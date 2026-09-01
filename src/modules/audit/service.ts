@@ -26,7 +26,9 @@ export type AuditAction =
   | "order.created"
   | "order.status_changed"
   | "order.shopify_synced"
-  | "order.shopify_sync_failed";
+  | "order.shopify_sync_failed"
+  | "online_checkout.ready"
+  | "online_checkout.failed";
 
 interface LogAuditInput {
   workspaceId: string;

@@ -123,10 +123,18 @@ export default async function OrdersPage({
                   </td>
                   <td className="px-4 py-3 text-neutral-500">{order.createdAt.toLocaleString("es-CO")}</td>
                   <td className="px-4 py-3">
-                    {order.codLead.name}
-                    <div className="text-neutral-500">
-                      {order.codLead.city}, {order.codLead.state}
-                    </div>
+                    {/* Pedido ONLINE (Fase 4D) não tem CodLead: os dados do
+                        cliente ficam na Shopify, preenchidos no checkout dela. */}
+                    {order.codLead ? (
+                      <>
+                        {order.codLead.name}
+                        <div className="text-neutral-500">
+                          {order.codLead.city}, {order.codLead.state}
+                        </div>
+                      </>
+                    ) : (
+                      <span className="text-neutral-500">Datos en Shopify</span>
+                    )}
                   </td>
                   <td className="px-4 py-3">
                     {order.total.toString()} {order.currency}

@@ -1,5 +1,6 @@
 import type { FunnelStep } from "@/modules/funnels/config/steps";
 import type { FunnelTheme } from "@/modules/funnels/config/theme";
+import type { CheckoutReadinessContext } from "@/modules/funnels/config/checkout-provider";
 import type { GamificationResult } from "@/modules/funnels/gamification/evaluate";
 import type { ResolvedProductSnapshot, ResolvedUpsellProduct } from "@/modules/funnels/runtime/resolve";
 import type { OrderConfirmation, RuntimeState } from "@/modules/funnels/runtime/state";
@@ -15,6 +16,8 @@ export interface StepRendererCallbacks {
   onContinue: () => void;
   onSelectOffer: (offerId: string, quantity: number) => void;
   onSelectPaymentMethod: (paymentMethodId: string) => void;
+  /** Fase 4D — prepara o checkout ONLINE no servidor e redireciona. */
+  onOnlineCheckout: ((paymentMethodId: string) => Promise<void>) | null;
   onCodSubmitted: (order: OrderConfirmation) => void;
   onAcceptUpsell: () => void;
   onDeclineUpsell: () => void;
@@ -35,6 +38,7 @@ export function StepRenderer({
   gamification,
   paymentChoiceConfig,
   offerTotal,
+  checkoutReadiness,
   upsellProduct,
   hasNextStep,
   callbacks,
@@ -54,6 +58,8 @@ export function StepRenderer({
   paymentChoiceConfig: Extract<FunnelStep, { type: "PAYMENT_CHOICE" }>["config"] | null;
   /** Total da oferta selecionada, ANTES do ajuste de método de pagamento — base pro preço mostrado em PAYMENT_CHOICE. */
   offerTotal: number;
+  /** Readiness dos providers, calculada no servidor (Fase 4D). */
+  checkoutReadiness: CheckoutReadinessContext;
   upsellProduct: ResolvedUpsellProduct | null;
   hasNextStep: boolean;
   callbacks: StepRendererCallbacks;
@@ -105,8 +111,10 @@ export function StepRenderer({
           currency={currency}
           selected={state.selectedPaymentMethodId}
           isPreview={isPreview}
+          readiness={checkoutReadiness}
           onSelect={callbacks.onSelectPaymentMethod}
           onContinue={callbacks.onContinue}
+          onOnlineCheckout={callbacks.onOnlineCheckout}
         />
       );
     case "COD_FORM": {

@@ -11,6 +11,8 @@
  */
 export interface SafeOrderLogFields {
   orderId?: string;
+  /** Tentativa de checkout ONLINE (Fase 4D) — id opaco, nunca PII. */
+  onlineCheckoutAttemptId?: string;
   publicOrderId?: string;
   orderNumber?: number;
   workspaceId?: string;
@@ -33,6 +35,7 @@ export interface SafeOrderLogFields {
 export function redactOrderFields(input: SafeOrderLogFields): SafeOrderLogFields {
   const {
     orderId,
+    onlineCheckoutAttemptId,
     publicOrderId,
     orderNumber,
     workspaceId,
@@ -47,6 +50,7 @@ export function redactOrderFields(input: SafeOrderLogFields): SafeOrderLogFields
   } = input;
   return {
     orderId,
+    onlineCheckoutAttemptId,
     publicOrderId,
     orderNumber,
     workspaceId,

@@ -5,6 +5,7 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
 import type { FunnelTheme } from "@/modules/funnels/config/theme";
+import { NO_ONLINE_CHECKOUT_READINESS } from "@/modules/funnels/config/checkout-provider";
 import type { PaymentChoiceStepConfig } from "@/modules/funnels/config/steps";
 import { PaymentChoiceStepView } from "./PaymentChoiceStepView";
 
@@ -42,6 +43,7 @@ describe("PaymentChoiceStepView — público (isPreview=false)", () => {
         offerTotal={149900}
         currency="COP"
         selected={null}
+        readiness={NO_ONLINE_CHECKOUT_READINESS}
         isPreview={false}
         onSelect={vi.fn()}
         onContinue={vi.fn()}
@@ -59,6 +61,7 @@ describe("PaymentChoiceStepView — público (isPreview=false)", () => {
         offerTotal={149900}
         currency="COP"
         selected={null}
+        readiness={NO_ONLINE_CHECKOUT_READINESS}
         isPreview={false}
         onSelect={vi.fn()}
         onContinue={vi.fn()}
@@ -77,6 +80,7 @@ describe("PaymentChoiceStepView — público (isPreview=false)", () => {
         offerTotal={149900}
         currency="COP"
         selected={null}
+        readiness={NO_ONLINE_CHECKOUT_READINESS}
         isPreview={false}
         onSelect={onSelect}
         onContinue={vi.fn()}
@@ -95,6 +99,7 @@ describe("PaymentChoiceStepView — público (isPreview=false)", () => {
         offerTotal={149900}
         currency="COP"
         selected={null}
+        readiness={NO_ONLINE_CHECKOUT_READINESS}
         isPreview={false}
         onSelect={vi.fn()}
         onContinue={vi.fn()}
@@ -113,6 +118,7 @@ describe("PaymentChoiceStepView — preview do Builder (isPreview=true)", () => 
         offerTotal={149900}
         currency="COP"
         selected={null}
+        readiness={NO_ONLINE_CHECKOUT_READINESS}
         isPreview
         onSelect={vi.fn()}
         onContinue={vi.fn()}
@@ -130,6 +136,7 @@ describe("PaymentChoiceStepView — preview do Builder (isPreview=true)", () => 
         offerTotal={149900}
         currency="COP"
         selected={null}
+        readiness={NO_ONLINE_CHECKOUT_READINESS}
         isPreview
         onSelect={vi.fn()}
         onContinue={vi.fn()}
@@ -147,6 +154,7 @@ describe("PaymentChoiceStepView — preview do Builder (isPreview=true)", () => 
         offerTotal={149900}
         currency="COP"
         selected={null}
+        readiness={NO_ONLINE_CHECKOUT_READINESS}
         isPreview
         onSelect={vi.fn()}
         onContinue={vi.fn()}
@@ -172,11 +180,141 @@ describe("PaymentChoiceStepView — métodos desabilitados nunca aparecem", () =
         offerTotal={149900}
         currency="COP"
         selected={null}
+        readiness={NO_ONLINE_CHECKOUT_READINESS}
         isPreview
         onSelect={vi.fn()}
         onContinue={vi.fn()}
       />
     );
     expect(screen.queryByText("Pagar ahora")).not.toBeInTheDocument();
+  });
+});
+
+describe("PaymentChoiceStepView — readiness vinda do servidor (Fase 4D)", () => {
+  const ready = { onlineCheckoutEnabled: true, storeConnected: true };
+
+  it("com a flag ligada E loja conectada, ONLINE aparece no público", () => {
+    render(
+      <PaymentChoiceStepView
+        config={config}
+        theme={theme}
+        offerTotal={149900}
+        currency="COP"
+        selected={null}
+        readiness={ready}
+        isPreview={false}
+        onSelect={vi.fn()}
+        onContinue={vi.fn()}
+      />
+    );
+    expect(screen.getByText("Pagar ahora")).toBeInTheDocument();
+    expect(screen.queryByText("No conectado")).not.toBeInTheDocument();
+  });
+
+  it("flag ligada mas loja desconectada mantém ONLINE fora do público (as duas condições são exigidas)", () => {
+    render(
+      <PaymentChoiceStepView
+        config={config}
+        theme={theme}
+        offerTotal={149900}
+        currency="COP"
+        selected={null}
+        readiness={{ onlineCheckoutEnabled: true, storeConnected: false }}
+        isPreview={false}
+        onSelect={vi.fn()}
+        onContinue={vi.fn()}
+      />
+    );
+    expect(screen.queryByText("Pagar ahora")).not.toBeInTheDocument();
+  });
+
+  it("com ONLINE selecionado, o CTA vira 'PAGAR POR EL SITIO' e chama onOnlineCheckout (nunca avança etapa)", async () => {
+    const onOnlineCheckout = vi.fn().mockResolvedValue(undefined);
+    const onContinue = vi.fn();
+    const user = userEvent.setup();
+    render(
+      <PaymentChoiceStepView
+        config={config}
+        theme={theme}
+        offerTotal={149900}
+        currency="COP"
+        selected="online"
+        readiness={ready}
+        isPreview={false}
+        onSelect={vi.fn()}
+        onContinue={onContinue}
+        onOnlineCheckout={onOnlineCheckout}
+      />
+    );
+
+    await user.click(screen.getByText("PAGAR POR EL SITIO"));
+
+    expect(onOnlineCheckout).toHaveBeenCalledWith("online");
+    // ONLINE nunca segue para o COD_FORM interno.
+    expect(onContinue).not.toHaveBeenCalled();
+  });
+
+  it("com COD selecionado, o CTA continua avançando pelo fluxo interno", async () => {
+    const onOnlineCheckout = vi.fn();
+    const onContinue = vi.fn();
+    const user = userEvent.setup();
+    render(
+      <PaymentChoiceStepView
+        config={config}
+        theme={theme}
+        offerTotal={149900}
+        currency="COP"
+        selected="cod"
+        readiness={ready}
+        isPreview={false}
+        onSelect={vi.fn()}
+        onContinue={onContinue}
+        onOnlineCheckout={onOnlineCheckout}
+      />
+    );
+
+    await user.click(screen.getByText("CONTINUAR"));
+
+    expect(onContinue).toHaveBeenCalled();
+    expect(onOnlineCheckout).not.toHaveBeenCalled();
+  });
+
+  it("nunca promete total final: avisa que frete/impostos são calculados no checkout", () => {
+    render(
+      <PaymentChoiceStepView
+        config={config}
+        theme={theme}
+        offerTotal={149900}
+        currency="COP"
+        selected="online"
+        readiness={ready}
+        isPreview={false}
+        onSelect={vi.fn()}
+        onContinue={vi.fn()}
+        onOnlineCheckout={vi.fn()}
+      />
+    );
+    expect(screen.getByText(/El envío y los impuestos se calculan en el checkout/)).toBeInTheDocument();
+  });
+
+  it("preview do Builder nunca dispara checkout real (onOnlineCheckout ausente)", async () => {
+    const user = userEvent.setup();
+    render(
+      <PaymentChoiceStepView
+        config={config}
+        theme={theme}
+        offerTotal={149900}
+        currency="COP"
+        selected="online"
+        readiness={NO_ONLINE_CHECKOUT_READINESS}
+        isPreview
+        onSelect={vi.fn()}
+        onContinue={vi.fn()}
+        onOnlineCheckout={null}
+      />
+    );
+
+    await user.click(screen.getByText("PAGAR POR EL SITIO"));
+    expect(await screen.findByRole("alert")).toHaveTextContent(/Vista previa/);
   });
 });

@@ -3,6 +3,11 @@ import "server-only";
 import { unstable_cache } from "next/cache";
 
 import { prisma } from "@/lib/db";
+import { env } from "@/lib/env";
+import {
+  NO_ONLINE_CHECKOUT_READINESS,
+  type CheckoutReadinessContext,
+} from "../config/checkout-provider";
 import { parseFunnelConfig } from "../config/parse";
 import type { FunnelConfig } from "../config/schema";
 import { funnelPublicCacheTag } from "./cache";
@@ -26,6 +31,13 @@ export interface ResolvedFunnel {
   snapshot: ResolvedProductSnapshot;
   /** ISO 4217 — sempre a da ShopifyStore do funil (Fase 4A). Nunca escolhida no client. */
   currency: string;
+  /**
+   * Readiness dos providers de checkout (Fase 4D), calculada SEMPRE aqui
+   * no servidor (lê feature flag + estado da loja) e passada adiante como
+   * dado serializável — nenhum componente client lê env. É isto que
+   * decide se o método ONLINE sequer aparece no storefront público.
+   */
+  checkoutReadiness: CheckoutReadinessContext;
   // Decorativo apenas (título/imagem) — não é um snapshot congelado como o
   // produto principal; não há preço de upsell nesta fase.
   upsellProduct: ResolvedUpsellProduct | null;
@@ -59,7 +71,7 @@ async function resolvePublishedFunnelUncached(publicId: string): Promise<Resolve
       publicId: true,
       status: true,
       publishedVersionId: true,
-      shopifyStore: { select: { currency: true } },
+      shopifyStore: { select: { currency: true, status: true } },
     },
   });
 
@@ -99,6 +111,10 @@ async function resolvePublishedFunnelUncached(publicId: string): Promise<Resolve
       compareAtPrice: version.productSnapshot.compareAtPrice?.toNumber() ?? null,
     },
     currency: funnel.shopifyStore.currency,
+    checkoutReadiness: {
+      onlineCheckoutEnabled: env.SHOPIFY_ONLINE_CHECKOUT_ENABLED,
+      storeConnected: funnel.shopifyStore.status === "CONNECTED",
+    },
     upsellProduct: await loadUpsellProduct(funnel.id),
     isPreview: false,
   };
@@ -160,6 +176,10 @@ export async function resolveFunnelVersionForPreview(
     config,
     snapshot,
     currency: version.funnel.shopifyStore.currency,
+    // Preview do Builder: mostra o método ONLINE mesmo sem integração
+    // ativa (com badge "No conectado") — nunca confundir "visível no
+    // preview" com "disponível ao público".
+    checkoutReadiness: NO_ONLINE_CHECKOUT_READINESS,
     upsellProduct: await loadUpsellProduct(funnelId),
     isPreview: true,
   };
