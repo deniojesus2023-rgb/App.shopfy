@@ -495,9 +495,24 @@ model FunnelVersion {
 /// OFFER step (unitPrice × quantity — mecanismo simples e explícito, sem
 /// pricing rules ainda).
 model FunnelProductSnapshot {
-  id               String   @id @default(cuid())
-  funnelVersionId  String   @unique
-  productId        String
+  id              String @id @default(cuid())
+  funnelVersionId String @unique
+  productId       String
+
+  // Identidade da VARIANTE cujo preço foi congelado em `unitPrice`. A
+  // publicação já escolhe uma variante concreta para ler o preço — congelar
+  // a identidade dela aqui é o que permite ao pedido saber DEPOIS o que
+  // exatamente foi vendido (line item real na Shopify, e futuramente
+  // SupplierOrder lendo variante + quantidade sem interpretar texto).
+  // Nullable porque snapshots publicados antes desta mudança não a têm —
+  // esses continuam válidos e viram custom line item, sem migração
+  // destrutiva de versão publicada.
+  productVariantId String?
+  shopifyProductId String?
+  shopifyVariantId String?
+  variantTitle     String?
+  sku              String?
+
   title            String
   featuredImageUrl String?
   unitPrice        Decimal  @db.Decimal(12, 2)

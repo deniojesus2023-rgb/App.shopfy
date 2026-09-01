@@ -12,7 +12,13 @@ interface FakeOrder {
   shopifyOrderName?: string | null;
   shopifySyncStatus: string;
   codLead: { name: string; phone: string; address: string; city: string; state: string; country: string };
-  items: Array<{ titleSnapshot: string; quantity: number; unitPrice: Prisma.Decimal; lineTotal: Prisma.Decimal }>;
+  items: Array<{
+    titleSnapshot: string;
+    shopifyVariantId: string | null;
+    quantity: number;
+    unitPrice: Prisma.Decimal;
+    lineTotal: Prisma.Decimal;
+  }>;
   shopifyStore: { id: string; shopDomain: string; status: string };
 }
 
@@ -87,7 +93,15 @@ function seedOrder(overrides: Partial<FakeOrder> = {}): FakeOrder {
     shopifyOrderId: null,
     shopifySyncStatus: "PENDING",
     codLead: { name: "Maria", phone: "+57 300", address: "Calle 1", city: "Medellín", state: "Antioquia", country: "CO" },
-    items: [{ titleSnapshot: "Produto X", quantity: 1, unitPrice: new Prisma.Decimal(100), lineTotal: new Prisma.Decimal(100) }],
+    items: [
+      {
+        titleSnapshot: "Produto X",
+        shopifyVariantId: "gid://shopify/ProductVariant/1",
+        quantity: 1,
+        unitPrice: new Prisma.Decimal(100),
+        lineTotal: new Prisma.Decimal(100),
+      },
+    ],
     shopifyStore: { id: "store_1", shopDomain: "loja.myshopify.com", status: "CONNECTED" },
     ...overrides,
   };
@@ -175,15 +189,16 @@ describe("processShopifyOrderCreateJob — criação e curto-circuito", () => {
     expect(input.sourceIdentifier).not.toMatch(/Maria|300|Calle|Medell/);
   });
 
-  it("envia sempre quantity:1 e unitPrice=lineTotal exato — quantidade real só no título", async () => {
+  it("bundle de 2 unidades preserva quantity=2 e o variantId real (nunca achata em quantity:1)", async () => {
     seedOrder({
-      total: new Prisma.Decimal(179800),
+      total: new Prisma.Decimal(149900),
       items: [
         {
           titleSnapshot: "Produto X",
+          shopifyVariantId: "gid://shopify/ProductVariant/42",
           quantity: 2,
-          unitPrice: new Prisma.Decimal(89900),
-          lineTotal: new Prisma.Decimal(179800),
+          unitPrice: new Prisma.Decimal(74950),
+          lineTotal: new Prisma.Decimal(149900),
         },
       ],
     });
@@ -191,17 +206,21 @@ describe("processShopifyOrderCreateJob — criação e curto-circuito", () => {
     await run();
 
     const input = createShopifyOrderMock.mock.calls[0][2];
-    expect(input.lineItems).toEqual([{ title: "Produto X (2x)", quantity: 1, unitPrice: "179800.00" }]);
+    expect(input.lineItems).toEqual([
+      { variantId: "gid://shopify/ProductVariant/42", title: "Produto X", quantity: 2, unitPrice: "74950.00" },
+    ]);
   });
 
-  it("FIXED_TOTAL com total não divisível por quantity ainda soma exato — sem quantity fracionado", async () => {
-    // 149.900 / 3 não é exato em centavos; o worker nunca usa unitPrice ×
-    // quantity, então isso nunca gera divergência.
+  it("FIXED_TOTAL não divisível (149.900 em 3) preserva quantidade física 3 e total exato", async () => {
+    // 149.900 / 3 não é exato em centavos. Em vez de mentir quantity=1, o
+    // worker distribui os centavos entre as unidades: a Shopify passa a ver
+    // 3 unidades vendidas e o total continua batendo no centavo.
     seedOrder({
       total: new Prisma.Decimal(149900),
       items: [
         {
           titleSnapshot: "Produto X",
+          shopifyVariantId: "gid://shopify/ProductVariant/42",
           quantity: 3,
           unitPrice: new Prisma.Decimal(49966.67),
           lineTotal: new Prisma.Decimal(149900),
@@ -212,13 +231,76 @@ describe("processShopifyOrderCreateJob — criação e curto-circuito", () => {
     await run();
 
     const input = createShopifyOrderMock.mock.calls[0][2];
-    expect(input.lineItems).toEqual([{ title: "Produto X (3x)", quantity: 1, unitPrice: "149900.00" }]);
+    expect(input.lineItems).toEqual([
+      { variantId: "gid://shopify/ProductVariant/42", title: "Produto X", quantity: 2, unitPrice: "49966.67" },
+      { variantId: "gid://shopify/ProductVariant/42", title: "Produto X", quantity: 1, unitPrice: "49966.66" },
+    ]);
+
+    const physicalQuantity = input.lineItems.reduce((s: number, li: { quantity: number }) => s + li.quantity, 0);
+    const cents = input.lineItems.reduce(
+      (s: number, li: { quantity: number; unitPrice: string }) => s + Math.round(Number(li.unitPrice) * 100) * li.quantity,
+      0
+    );
+    expect(physicalQuantity).toBe(3);
+    expect(cents).toBe(14990000);
+  });
+
+  it("nenhuma informação essencial vai no título — quantidade nunca é codificada em texto", async () => {
+    seedOrder({
+      total: new Prisma.Decimal(149900),
+      items: [
+        {
+          titleSnapshot: "Produto X",
+          shopifyVariantId: "gid://shopify/ProductVariant/42",
+          quantity: 3,
+          unitPrice: new Prisma.Decimal(49966.67),
+          lineTotal: new Prisma.Decimal(149900),
+        },
+      ],
+    });
+
+    await run();
+
+    const input = createShopifyOrderMock.mock.calls[0][2];
+    for (const li of input.lineItems) {
+      expect(li.title).toBe("Produto X");
+    }
+  });
+
+  it("pedido de snapshot antigo (sem variante congelada) ainda preserva a quantidade real", async () => {
+    seedOrder({
+      total: new Prisma.Decimal(149900),
+      items: [
+        {
+          titleSnapshot: "Produto X",
+          shopifyVariantId: null,
+          quantity: 2,
+          unitPrice: new Prisma.Decimal(74950),
+          lineTotal: new Prisma.Decimal(149900),
+        },
+      ],
+    });
+
+    await run();
+
+    const input = createShopifyOrderMock.mock.calls[0][2];
+    expect(input.lineItems).toEqual([
+      { variantId: null, title: "Produto X", quantity: 2, unitPrice: "74950.00" },
+    ]);
   });
 
   it("falha fechado quando os line items não somam o total do Order (quote não representável)", async () => {
     seedOrder({
       total: new Prisma.Decimal(150), // desconto/frete hipotético: divergente de 1 × 100
-      items: [{ titleSnapshot: "Produto X", quantity: 1, unitPrice: new Prisma.Decimal(100), lineTotal: new Prisma.Decimal(100) }],
+      items: [
+      {
+        titleSnapshot: "Produto X",
+        shopifyVariantId: "gid://shopify/ProductVariant/1",
+        quantity: 1,
+        unitPrice: new Prisma.Decimal(100),
+        lineTotal: new Prisma.Decimal(100),
+      },
+    ],
     });
 
     await expect(run()).rejects.toThrow(NonRetryableJobError);

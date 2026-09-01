@@ -15,13 +15,28 @@ import type { OfferItem } from "@/modules/funnels/config/steps";
  * para não reintroduzir o problema de arredondamento que um FIXED_TOTAL
  * não divisível por quantity causaria.
  */
+/**
+ * Identidade do que está sendo vendido, congelada na versão publicada.
+ * Tudo opcional porque versões publicadas antes de a variante ser
+ * congelada continuam gerando pedidos normalmente — o pedido só fica sem
+ * a identidade de variante, nunca sem quantidade ou preço.
+ */
+export interface QuoteProductIdentity {
+  productId?: string | null;
+  productVariantId?: string | null;
+  shopifyProductId?: string | null;
+  shopifyVariantId?: string | null;
+  variantTitle?: string | null;
+  sku?: string | null;
+}
+
 export interface OrderQuoteInput {
-  productSnapshot: { unitPrice: number; title: string };
+  productSnapshot: { unitPrice: number; title: string } & QuoteProductIdentity;
   offer: OfferItem;
   currency: string;
 }
 
-export interface OrderQuoteItem {
+export interface OrderQuoteItem extends QuoteProductIdentity {
   titleSnapshot: string;
   quantity: number;
   unitPrice: number;
@@ -45,6 +60,12 @@ export function calculateOrderQuote(input: OrderQuoteInput): OrderQuote {
 
   const item: OrderQuoteItem = {
     titleSnapshot: input.productSnapshot.title,
+    productId: input.productSnapshot.productId ?? null,
+    productVariantId: input.productSnapshot.productVariantId ?? null,
+    shopifyProductId: input.productSnapshot.shopifyProductId ?? null,
+    shopifyVariantId: input.productSnapshot.shopifyVariantId ?? null,
+    variantTitle: input.productSnapshot.variantTitle ?? null,
+    sku: input.productSnapshot.sku ?? null,
     quantity: resolved.quantity,
     unitPrice: effectiveUnitPrice,
     lineSubtotal: resolved.referenceSubtotal,

@@ -11,6 +11,7 @@ import { getDecryptedAccessToken } from "@/modules/shopify/stores/service";
 import { roundMoney } from "@/modules/shared/money";
 import { redactOrderFields } from "@/modules/shared/redact";
 import { orderSourceIdentifier } from "../shopify-identity";
+import { buildShopifyLineItems, projectedTotalCents } from "../shopify-line-items";
 import { internalOrderTag } from "../shopify-tag";
 
 /**
@@ -113,6 +114,28 @@ export async function processShopifyOrderCreateJob(payload: ShopifyOrderCreatePa
     );
   }
 
+  // Projeção para a Shopify preservando as DUAS semânticas: quantidade
+  // física real e total exato. Um pacote FIXED_TOTAL cujo total não divide
+  // em centavos pela quantidade vira mais de um line item da mesma
+  // variante, nunca uma linha de quantidade 1 (ver shopify-line-items.ts).
+  const lineItems = buildShopifyLineItems(
+    order.items.map((item) => ({
+      titleSnapshot: item.titleSnapshot,
+      shopifyVariantId: item.shopifyVariantId,
+      quantity: item.quantity,
+      lineTotal: Number(item.lineTotal),
+    }))
+  );
+
+  // Invariante final antes de tocar a rede: o que a Shopify vai cobrar
+  // (Σ preço unitário × quantidade) tem que ser exatamente `Order.total`.
+  // A distribuição garante isso por construção — esta checagem existe para
+  // que qualquer regressão futura falhe fechada em vez de cobrar errado.
+  if (projectedTotalCents(lineItems) !== Math.round(Number(order.total) * 100)) {
+    await prisma.order.update({ where: { id: order.id }, data: { shopifySyncStatus: "FAILED" } });
+    throw new NonRetryableJobError("Projeção de line items não reproduz o total do pedido.");
+  }
+
   // PENDING é o ÚNICO estado que prova que nenhuma tentativa chegou à
   // rede (o marcador SYNCING é gravado antes do primeiro byte sair).
   // Qualquer outro estado — SYNCING (tentativa ambígua), FAILED (tentativa
@@ -143,17 +166,7 @@ export async function processShopifyOrderCreateJob(payload: ShopifyOrderCreatePa
       internalOrderTag: internalOrderTag(order.id),
       note: `Pedido COD #${order.orderNumber}`,
       phone: order.codLead.phone,
-      // Sempre quantity=1 com unitPrice = lineTotal exato (nunca
-      // item.unitPrice × item.quantity — ver comentário da checagem de
-      // fidelidade acima): a quantidade comercial real vai só no título.
-      // Uniforme para UNIT_MULTIPLIER e FIXED_TOTAL, sem branch por tipo de
-      // pricing — o worker não decide preço, só formata um total já
-      // congelado como um line item Shopify válido.
-      lineItems: order.items.map((item) => ({
-        title: item.quantity > 1 ? `${item.titleSnapshot} (${item.quantity}x)` : item.titleSnapshot,
-        quantity: 1,
-        unitPrice: item.lineTotal.toFixed(2),
-      })),
+      lineItems,
       shippingAddress: {
         firstName: order.codLead.name,
         address1: order.codLead.address,

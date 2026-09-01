@@ -23,9 +23,14 @@ const ORDER_REQUEST_TIMEOUT_MS = 15_000;
  *   - `sourceIdentifier` carrega a identidade do nosso Order (é o campo
  *     documentado para "ID no sistema de origem", e o único filtrável por
  *     `source_identifier:` na query `orders`) — base da reconciliação.
- *   - `lineItems` são "custom line items" (sem `variantId`) — o preço vem
- *     sempre do nosso `calculateOrderQuote()`, nunca do Product ao vivo
- *     sincronizado na Shopify.
+ *   - `lineItems` levam `variantId` real quando a versão publicada congelou
+ *     a identidade da variante, e `priceSet` SEMPRE — o preço vem do nosso
+ *     `calculateOrderQuote()`, nunca do Product ao vivo. Sem variante
+ *     congelada (snapshots antigos), cai em custom line item.
+ *     A VERIFICAR no dev store antes de ligar o sync: que `priceSet` tem
+ *     precedência sobre o preço do catálogo quando `variantId` é enviado.
+ *     Se não tiver, a saída é voltar a omitir `variantId` — nunca aceitar
+ *     cobrar um valor diferente do que o cliente aceitou.
  *   - `financialStatus: PENDING` sempre, e NENHUM bloco `transactions`:
  *     COD não é pago no checkout, então não existe transação de sucesso
  *     para registrar. Nunca simulamos pagamento.
@@ -61,8 +66,16 @@ export interface CreateShopifyOrderInput {
   /**
    * Preço UNITÁRIO por item, já formatado com 2 casas. A Shopify multiplica
    * por `quantity` — enviar o total da linha aqui cobraria a mais.
+   *
+   * `quantity` é sempre a quantidade FÍSICA real de unidades. Um pacote
+   * cujo total não divide exato em centavos vira mais de um line item da
+   * mesma variante, nunca uma linha de quantidade 1 mentindo sobre o que
+   * foi vendido (ver modules/orders/shopify-line-items.ts).
+   *
+   * `variantId` é o GID da variante real quando a versão publicada
+   * congelou essa identidade; `null` cai em custom line item.
    */
-  lineItems: Array<{ title: string; quantity: number; unitPrice: string }>;
+  lineItems: Array<{ variantId: string | null; title: string; quantity: number; unitPrice: string }>;
   /** Identidade da reconciliação (modules/orders/shopify-identity.ts). */
   sourceIdentifier: string;
   /** Apoio visual para o lojista — nunca usado como identidade. */
@@ -107,11 +120,18 @@ export async function createShopifyOrder(
       note: input.note,
       phone: input.phone,
       lineItems: input.lineItems.map((item) => ({
+        // Só entra quando a identidade da variante foi congelada. Com
+        // `variantId`, o pedido na Shopify passa a ser um pedido de produto
+        // real — inventory, fulfillment e relatórios enxergam a variante e a
+        // quantidade certas, em vez de um item avulso.
+        ...(item.variantId ? { variantId: item.variantId } : {}),
+        // Apresentação apenas — nenhum consumidor downstream lê quantidade
+        // ou identidade daqui.
         title: item.title,
         quantity: item.quantity,
-        // priceSet = preço unitário no dinheiro da loja. É o que preserva o
-        // quote calculado pelo NOSSO servidor: sem `variantId`, a Shopify
-        // não tem para onde buscar um preço "atual" do produto.
+        // priceSet = preço unitário no dinheiro da loja, sempre o do NOSSO
+        // `calculateOrderQuote()`. É o que impede a Shopify de recalcular o
+        // preço a partir do catálogo ao vivo quando mandamos `variantId`.
         priceSet: { shopMoney: { amount: item.unitPrice, currencyCode: input.currency } },
         requiresShipping: true,
       })),

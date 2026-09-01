@@ -377,6 +377,11 @@ export async function publishFunnel(workspaceId: string, funnelId: string, user:
       data: {
         funnelVersionId: publishedVersion.id,
         productId: snapshotSource.productId,
+        productVariantId: snapshotSource.productVariantId,
+        shopifyProductId: snapshotSource.shopifyProductId,
+        shopifyVariantId: snapshotSource.shopifyVariantId,
+        variantTitle: snapshotSource.variantTitle,
+        sku: snapshotSource.sku,
         title: snapshotSource.title,
         featuredImageUrl: snapshotSource.featuredImageUrl,
         unitPrice: snapshotSource.unitPrice,
@@ -410,6 +415,13 @@ export async function publishFunnel(workspaceId: string, funnelId: string, user:
 
 interface PrimaryProductSnapshotSource {
   productId: string;
+  // Identidade da variante de onde `unitPrice` veio — congelada junto com o
+  // preço para que o pedido saiba depois o que exatamente foi vendido.
+  productVariantId: string;
+  shopifyProductId: string;
+  shopifyVariantId: string;
+  variantTitle: string;
+  sku: string | null;
   title: string;
   featuredImageUrl: string | null;
   unitPrice: number;
@@ -440,6 +452,11 @@ async function loadPrimaryProductSnapshotSource(
 
   return {
     productId: product.id,
+    productVariantId: variant.id,
+    shopifyProductId: product.shopifyProductId,
+    shopifyVariantId: variant.shopifyVariantId,
+    variantTitle: variant.title,
+    sku: variant.sku,
     title: product.title,
     featuredImageUrl: product.featuredImageUrl,
     unitPrice: variant.price.toNumber(),

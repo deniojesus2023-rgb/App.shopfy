@@ -106,7 +106,17 @@ export async function submitCheckout(input: SubmitCheckoutInput): Promise<Submit
   });
 
   const quote = calculateOrderQuote({
-    productSnapshot: { unitPrice: version.productSnapshot.unitPrice.toNumber(), title: version.productSnapshot.title },
+    productSnapshot: {
+      unitPrice: version.productSnapshot.unitPrice.toNumber(),
+      title: version.productSnapshot.title,
+      // Identidade congelada na publicação — nunca lida do catálogo ao vivo.
+      productId: version.productSnapshot.productId,
+      productVariantId: version.productSnapshot.productVariantId,
+      shopifyProductId: version.productSnapshot.shopifyProductId,
+      shopifyVariantId: version.productSnapshot.shopifyVariantId,
+      variantTitle: version.productSnapshot.variantTitle,
+      sku: version.productSnapshot.sku,
+    },
     offer,
     currency: shopifyStore?.currency ?? "COP",
   });
@@ -237,6 +247,14 @@ async function createOrderTransaction(input: CreateOrderTransactionInput) {
         workspaceId: input.workspaceId,
         orderId: order.id,
         titleSnapshot: item.titleSnapshot,
+        // Identidade do que foi vendido. É daqui que a futura SupplierOrder
+        // lê variante + quantidade — nunca do título.
+        productId: item.productId,
+        productVariantId: item.productVariantId,
+        shopifyProductId: item.shopifyProductId,
+        shopifyVariantId: item.shopifyVariantId,
+        variantTitleSnapshot: item.variantTitle,
+        skuSnapshot: item.sku,
         quantity: item.quantity,
         unitPrice: item.unitPrice,
         lineSubtotal: item.lineSubtotal,

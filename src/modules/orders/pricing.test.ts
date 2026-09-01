@@ -98,3 +98,42 @@ describe("calculateOrderQuote — money/currency", () => {
     expect(quote.currency).toBe("CLP");
   });
 });
+
+describe("calculateOrderQuote — identidade do que foi vendido", () => {
+  it("propaga a identidade congelada do snapshot para o item do quote", () => {
+    const quote = calculateOrderQuote({
+      productSnapshot: {
+        unitPrice: 89900,
+        title: "Produto X",
+        productId: "prod_1",
+        productVariantId: "pv_1",
+        shopifyProductId: "gid://shopify/Product/1",
+        shopifyVariantId: "gid://shopify/ProductVariant/42",
+        variantTitle: "Default",
+        sku: "SKU-1",
+      },
+      offer: { id: "two", quantity: 2, label: "2x", pricing: { type: "FIXED_TOTAL", amount: 149900 } },
+      currency: "COP",
+    });
+
+    expect(quote.items[0]).toMatchObject({
+      productVariantId: "pv_1",
+      shopifyVariantId: "gid://shopify/ProductVariant/42",
+      sku: "SKU-1",
+      quantity: 2,
+      lineTotal: 149900,
+    });
+  });
+
+  it("snapshot antigo sem variante congelada gera item com identidade nula, nunca quebra o pedido", () => {
+    const quote = calculateOrderQuote({
+      productSnapshot: productSnapshot(89900),
+      offer: { id: "two", quantity: 2, label: "2x", pricing: { type: "FIXED_TOTAL", amount: 149900 } },
+      currency: "COP",
+    });
+
+    expect(quote.items[0].shopifyVariantId).toBeNull();
+    expect(quote.items[0].quantity).toBe(2);
+    expect(quote.items[0].lineTotal).toBe(149900);
+  });
+});

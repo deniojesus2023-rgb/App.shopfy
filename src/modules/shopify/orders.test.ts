@@ -21,7 +21,7 @@ function baseInput(overrides: Partial<Parameters<typeof createShopifyOrder>[2]> 
     currency: "COP",
     sourceIdentifier: "appshopfy_order_corder1",
     internalOrderTag: "internal_order_corder1",
-    lineItems: [{ title: "Produto X", quantity: 1, unitPrice: "89900.00" }],
+    lineItems: [{ variantId: null, title: "Produto X", quantity: 1, unitPrice: "89900.00" }],
     shippingAddress: { firstName: "Maria", address1: "Calle 1", city: "Medellín", country: "CO" },
     ...overrides,
   };
@@ -78,7 +78,7 @@ describe("createShopifyOrder", () => {
     await createShopifyOrder(
       "loja.myshopify.com",
       "token",
-      baseInput({ lineItems: [{ title: "Produto X", quantity: 3, unitPrice: "89900.00" }] })
+      baseInput({ lineItems: [{ variantId: null, title: "Produto X", quantity: 3, unitPrice: "89900.00" }] })
     );
 
     const lineItem = lastVariables().order.lineItems[0];
@@ -87,6 +87,33 @@ describe("createShopifyOrder", () => {
     // Unitário, não total da linha — a Shopify multiplica por quantity.
     expect(lineItem.priceSet.shopMoney).toEqual({ amount: "89900.00", currencyCode: "COP" });
     expect(lineItem.quantity).toBe(3);
+  });
+
+  it("envia variantId real quando a variante foi congelada, sempre junto com priceSet", async () => {
+    requestMock.mockResolvedValue(createdResponse);
+
+    await createShopifyOrder(
+      "loja.myshopify.com",
+      "token",
+      baseInput({
+        lineItems: [
+          {
+            variantId: "gid://shopify/ProductVariant/42",
+            title: "Produto X",
+            quantity: 2,
+            unitPrice: "74950.00",
+          },
+        ],
+      })
+    );
+
+    const lineItem = lastVariables().order.lineItems[0];
+    expect(lineItem.variantId).toBe("gid://shopify/ProductVariant/42");
+    // priceSet vai JUNTO com variantId — é o que impede a Shopify de
+    // recalcular o preço a partir do catálogo ao vivo.
+    expect(lineItem.priceSet.shopMoney).toEqual({ amount: "74950.00", currencyCode: "COP" });
+    // Quantidade física real preservada no payload.
+    expect(lineItem.quantity).toBe(2);
   });
 
   it("userErrors: retorna outcome 'userErrors' em vez de lançar", async () => {

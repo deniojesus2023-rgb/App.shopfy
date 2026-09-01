@@ -16,7 +16,18 @@ interface FakeVersion {
   config: unknown;
   status: string;
   supersededAt: Date | null;
-  productSnapshot: { title: string; featuredImageUrl: string | null; unitPrice: Prisma.Decimal; compareAtPrice: number | null } | null;
+  productSnapshot: {
+    title: string;
+    featuredImageUrl: string | null;
+    unitPrice: Prisma.Decimal;
+    compareAtPrice: number | null;
+    productId: string | null;
+    productVariantId: string | null;
+    shopifyProductId: string | null;
+    shopifyVariantId: string | null;
+    variantTitle: string | null;
+    sku: string | null;
+  } | null;
 }
 
 interface FakeStore {
@@ -244,6 +255,12 @@ function seedPublishedFunnel(overrides: { steps?: unknown[] } = {}) {
       featuredImageUrl: null,
       unitPrice: new Prisma.Decimal(100),
       compareAtPrice: null,
+      productId: "prod_1",
+      productVariantId: "pv_1",
+      shopifyProductId: "gid://shopify/Product/1",
+      shopifyVariantId: "gid://shopify/ProductVariant/42",
+      variantTitle: "Default",
+      sku: "SKU-1",
     },
   };
   funnels.push(funnel);
@@ -420,5 +437,22 @@ describe("submitCheckout — idempotência e transação", () => {
     await submitCheckout(baseInput());
 
     expect(orderItems[0]).toMatchObject({ titleSnapshot: "Produto X", unitPrice: 100, quantity: 1 });
+  });
+
+  it("OrderItem grava a identidade da variante congelada — a futura SupplierOrder lê daqui, nunca do título", async () => {
+    seedPublishedFunnel();
+    await submitCheckout(baseInput());
+
+    expect(orderItems[0]).toMatchObject({
+      productId: "prod_1",
+      productVariantId: "pv_1",
+      shopifyProductId: "gid://shopify/Product/1",
+      shopifyVariantId: "gid://shopify/ProductVariant/42",
+      variantTitleSnapshot: "Default",
+      skuSnapshot: "SKU-1",
+      quantity: 1,
+    });
+    // A quantidade vive no campo `quantity`, nunca codificada em texto.
+    expect((orderItems[0] as { titleSnapshot: string }).titleSnapshot).toBe("Produto X");
   });
 });

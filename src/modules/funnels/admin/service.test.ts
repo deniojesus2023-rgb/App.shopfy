@@ -12,6 +12,9 @@ interface FakeStore {
 }
 interface FakeVariant {
   id: string;
+  shopifyVariantId: string;
+  title: string;
+  sku: string | null;
   price: { toNumber: () => number };
   compareAtPrice: { toNumber: () => number } | null;
   position: number;
@@ -21,6 +24,7 @@ interface FakeProduct {
   id: string;
   workspaceId: string;
   shopifyStoreId: string;
+  shopifyProductId: string;
   title: string;
   featuredImageUrl: string | null;
   variants: FakeVariant[];
@@ -251,11 +255,15 @@ beforeEach(() => {
       id: "prod_1",
       workspaceId: "ws_1",
       shopifyStoreId: "store_1",
+      shopifyProductId: "gid://shopify/Product/1",
       title: "Produto Principal",
       featuredImageUrl: "https://cdn.example.com/prod_1.jpg",
       variants: [
         {
           id: "var_1",
+          shopifyVariantId: "gid://shopify/ProductVariant/42",
+          title: "Default",
+          sku: "SKU-1",
           price: fakeDecimal(19.9),
           compareAtPrice: fakeDecimal(29.9),
           position: 0,
@@ -328,7 +336,7 @@ describe("createFunnel", () => {
   });
 
   it("rejeita produto de outro workspace", async () => {
-    products.push({ id: "prod_other_ws", workspaceId: "ws_2", shopifyStoreId: "store_1", title: "x", featuredImageUrl: null, variants: [] });
+    products.push({ id: "prod_other_ws", workspaceId: "ws_2", shopifyStoreId: "store_1", shopifyProductId: "gid://shopify/Product/9", title: "x", featuredImageUrl: null, variants: [] });
 
     await expect(
       createFunnel({
@@ -344,7 +352,7 @@ describe("createFunnel", () => {
 
   it("rejeita produto de loja Shopify diferente (mesmo workspace)", async () => {
     stores.push({ id: "store_2", workspaceId: "ws_1" });
-    products.push({ id: "prod_other_store", workspaceId: "ws_1", shopifyStoreId: "store_2", title: "x", featuredImageUrl: null, variants: [] });
+    products.push({ id: "prod_other_store", workspaceId: "ws_1", shopifyStoreId: "store_2", shopifyProductId: "gid://shopify/Product/8", title: "x", featuredImageUrl: null, variants: [] });
 
     await expect(
       createFunnel({
@@ -509,6 +517,25 @@ describe("publishFunnel", () => {
       featuredImageUrl: "https://cdn.example.com/prod_1.jpg",
       unitPrice: 19.9,
       compareAtPrice: 29.9,
+    });
+  });
+
+  it("congela a identidade da VARIANTE de onde o preço veio (não só o preço)", async () => {
+    const funnel = await seedFunnelWithDraft();
+
+    await publishFunnel("ws_1", funnel.id, fakeUser);
+
+    // A publicação já escolhia uma variante concreta para ler o preço; a
+    // identidade dela é congelada junto para que o pedido saiba depois o
+    // que exatamente foi vendido (line item real na Shopify, SupplierOrder).
+    expect(snapshots[0]).toMatchObject({
+      productVariantId: "var_1",
+      shopifyProductId: "gid://shopify/Product/1",
+      shopifyVariantId: "gid://shopify/ProductVariant/42",
+      variantTitle: "Default",
+      sku: "SKU-1",
+      // Coerência: o preço congelado é o preço DESSA variante.
+      unitPrice: 19.9,
     });
   });
 

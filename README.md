@@ -519,16 +519,51 @@ versão publicada e usada de ponta a ponta (Builder, storefront,
   `OrderItem.unitPrice` é o preço unitário EFETIVO (`total/quantity`,
   arredondado — informativo), nunca usado para reconstituir o total; isso
   é sempre `OrderItem.lineTotal`, exato, sem divisão.
-- **Mapeamento para a Shopify simplificado**: todo line item vai sempre
-  como `quantity: 1` com `unitPrice = lineTotal` exato — a quantidade
-  comercial real só entra no título (`"Produto X (3x)"`). Uniforme para
-  `UNIT_MULTIPLIER` e `FIXED_TOTAL`, sem branch por tipo de pricing no
-  worker — resolve de vez o problema de um `FIXED_TOTAL` não divisível em
-  centavos exatos por `quantity` (149.900 ÷ 3 não fecha exato) sem
-  precisar de um algoritmo de distribuição de centavos. A checagem de
-  fidelidade do worker (Fase 3) foi corrigida para comparar
-  `Σ lineTotal === Order.total` (nunca `Σ unitPrice × quantity`, que
-  ficaria instável com desconto).
+- **Mapeamento para a Shopify preserva quantidade física E dinheiro exato**
+  (`modules/orders/shopify-line-items.ts`). Uma primeira versão desta fase
+  mandava todo line item como `quantity: 1` com `unitPrice = lineTotal` e a
+  quantidade comercial só no título: preservava o total, mas destruía a
+  semântica de quantidade — inventory, fulfillment, picking, refunds e
+  relatórios passavam a "ver" 1 unidade vendida quando foram 3, e título
+  virava campo de integração. Substituído por **distribuição determinística
+  de centavos** entre as unidades físicas: distribuindo `totalCents` por
+  `quantity` unidades cada uma recebe `base` ou `base + 1` centavos, o que
+  colapsa em no máximo DOIS line items da mesma variante.
+
+  ```
+  149.900 em 3 unidades → 2 × 49.966,67 + 1 × 49.966,66 = 149.900,00
+                          quantidade física total = 3
+  ```
+
+  Invariantes garantidas por construção e verificadas em teste:
+  `Σ quantity === OrderItem.quantity` e
+  `Σ (quantity × unitPrice) === OrderItem.lineTotal`. Quando o total divide
+  exato (todo `UNIT_MULTIPLIER` e a maioria dos `FIXED_TOTAL`), o resto é
+  zero e sai UM line item com a quantidade real — nenhum split
+  desnecessário. O título voltou a ser apresentação pura.
+- **Identidade da variante congelada na publicação**: `publishFunnel` já
+  escolhia uma variante concreta para ler o preço (primeira por `position`,
+  não deletada) mas descartava a identidade dela. Agora
+  `FunnelProductSnapshot` congela também `productVariantId`,
+  `shopifyProductId`, `shopifyVariantId`, `variantTitle` e `sku`, que o
+  checkout copia para o `OrderItem` (colunas que já existiam no schema e
+  nunca eram preenchidas). Com isso o line item da Shopify vai com
+  `variantId` real — pedido de produto real, não item avulso — e a futura
+  `SupplierOrder` lê `OrderItem.productVariantId` + `OrderItem.quantity`
+  direto, sem interpretar texto. Campos nullable: snapshots publicados
+  antes disso continuam válidos e caem em custom line item, ainda com a
+  quantidade real. Nenhuma migração destrutiva de versão publicada.
+- **`priceSet` vai sempre junto com `variantId`** — é o que impede a
+  Shopify de recalcular o preço a partir do catálogo ao vivo. Essa
+  precedência está marcada em `modules/shopify/orders.ts` como item a
+  validar num dev store antes de ligar `SHOPIFY_ORDER_SYNC_ENABLED`: se
+  não se confirmar, a saída é voltar a omitir `variantId`, nunca aceitar
+  cobrar valor diferente do que o cliente aceitou.
+- **Duas checagens de fidelidade antes de tocar a rede**: a da Fase 3
+  corrigida para `Σ lineTotal === Order.total` (nunca
+  `Σ unitPrice × quantity`, que ficaria instável com desconto) e uma nova
+  sobre a projeção — `Σ (unitPrice × quantity) dos line items` tem que
+  reproduzir `Order.total` no centavo. Ambas falham fechado.
 - **Money**: reaproveita a estratégia da Fase 3 (`Decimal(12,2)`,
   `roundMoney`) sem criar segunda implementação — adiciona só
   `multiplyMoney`/`compareMoney` e `formatMoneyForDisplay(value, currency)`
@@ -648,10 +683,18 @@ com a nova assinatura (`productSnapshot`/`offer`/`currency`, sem
 igualmente pela quantidade; `submitCheckout` ignorando `selectedQuantity`
 manipulado no payload bruto (o campo não existe mais no schema/tipo) e
 derivando a quantidade sempre da oferta resolvida no servidor; o job
-`SHOPIFY_ORDER_CREATE` enviando sempre `quantity: 1` com `unitPrice
-= lineTotal` exato (título carrega a quantidade comercial, ex. `"Produto X
-(2x)"`) e a checagem de fidelidade por `Σ lineTotal` (não mais `unitPrice ×
-quantity`); `OfferStepEditor` (alternância Preço automático/fixo, seed do
+`SHOPIFY_ORDER_CREATE` e a projeção de line items
+(`distributeLineTotal`/`buildShopifyLineItems`): casos divisíveis saem numa
+única linha sem split, `149.900 em 3 unidades` distribui centavos
+preservando quantidade física 3 e total exato, nunca mais de dois grupos
+por item, soma exata verificada por varredura de várias quantidades e
+totais, ordem determinística, quantidade inválida rejeitada, `variantId`
+preservado em todas as linhas do split, snapshot antigo sem variante ainda
+preserva a quantidade real, título nunca carrega quantidade, e a checagem
+de fidelidade por `Σ lineTotal` (não mais `unitPrice × quantity`) somada à
+nova invariante de que a projeção reproduz `Order.total` no centavo;
+congelamento da identidade da variante na publicação e sua propagação
+snapshot → quote → `OrderItem`; `OfferStepEditor` (alternância Preço automático/fixo, seed do
 campo fixo com a referência ao trocar de tipo, exibição de referência/oferta/economia
 só quando há desconto real, aviso não-bloqueante quando o preço fixo supera
 a referência, seleção de `defaultOfferId` restrita a ofertas existentes);
